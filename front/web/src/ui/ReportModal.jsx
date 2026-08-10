@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 import { useStore } from '../state/store.js'
+import Markdown from './Markdown.jsx'
 
 // 오락실 종합 리포트 팝업 — 전원 평가 완료 후 스트리밍으로 작성 과정을 보여준다
 export default function ReportModal({ onReturnOffice }) {
@@ -26,7 +27,7 @@ export default function ReportModal({ onReturnOffice }) {
           {streaming && !text && (
             <div className="sys-line pulse-text">🧮 손님 {arcade.reports?.length || 0}명의 피드백을 종합하는 중…</div>
           )}
-          {text && <pre className="md">{text}{streaming && <span className="caret">▌</span>}</pre>}
+          {text && <div className="md"><Markdown text={text} />{streaming && <span className="caret">▌</span>}</div>}
         </div>
         <div className="panel-foot">
           {streaming ? (

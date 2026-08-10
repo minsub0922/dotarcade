@@ -51,7 +51,7 @@ export default function App() {
       engRef.current = eng
       meetRef.current = new MeetingEngine(eng)
       simRef.current = new ArcadeSim(eng)
-      window.__dotcade = { eng, meet: meetRef.current, sim: simRef.current } // 디버그/E2E용
+      window.__dotcade = { eng, meet: meetRef.current, sim: simRef.current, store: useStore } // 디버그/E2E용
 
       await eng.load(['player', ...TEAM.map(t => t.id), ...VISITORS.map(v => v.id)])
       eng.player.label = `${PLAYER.name} (팀장)`

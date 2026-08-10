@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react'
 import { useStore } from '../state/store.js'
+import Markdown from './Markdown.jsx'
 
 const Star = ({ n }) => <span className="stars">{'★'.repeat(Math.max(1, Math.round(n / 2)))}<i>{'★'.repeat(5 - Math.max(1, Math.round(n / 2)))}</i></span>
 
@@ -34,7 +35,7 @@ export default function ArcadePanel({ sim, onBack }) {
         {arcade.status === 'summarizing' && <div className="sys-line pulse-text">📊 종합 리포트 작성 중…</div>}
         {arcade.status === 'done' && arcade.summary && (
           <div className="summary-card">
-            <pre className="md">{arcade.summary}</pre>
+            <Markdown className="md" text={arcade.summary} />
           </div>
         )}
         {[...arcade.reports].reverse().map((r, i) => (

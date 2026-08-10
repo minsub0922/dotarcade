@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useStore } from '../state/store.js'
 import { api } from '../api.js'
+import Markdown from './Markdown.jsx'
 
 export default function Library({ onPlay, onUpgrade, onDeploy }) {
   const games = useStore(s => s.games)
@@ -153,7 +154,7 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
             {Object.entries(game.feedback || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([v, f]) => (
               <div key={v} className="fb-version">
                 <div className="fb-head"><b className="ver">{v}</b> 평균 <b>⭐ {f.avg}/10</b> · {f.reports?.length}명 · {f.at?.slice(0, 10)}</div>
-                {f.summary && <pre className="md">{f.summary}</pre>}
+                {f.summary && <Markdown className="md" text={f.summary} />}
                 <div className="fb-chips">
                   {(f.reports || []).map((r, i) => (
                     <span key={i} className="chip" title={`${r.detail?.fun || ''}\n${r.detail?.difficulty || ''}`}>

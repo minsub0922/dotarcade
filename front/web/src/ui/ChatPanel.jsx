@@ -3,6 +3,7 @@ import { useStore } from '../state/store.js'
 import { api } from '../api.js'
 import { TEAM } from '../data/personas.js'
 import { chatWithAgent } from '../meeting/engine.js'
+import Markdown from './Markdown.jsx'
 
 export default function ChatPanel({ world }) {
   const { panelData, closePanel } = useStore()
@@ -81,13 +82,13 @@ export default function ChatPanel({ world }) {
         {history.map((m, i) => (
           <div key={i} className={`msg ${m.role === 'user' ? 'me' : 'ai'}`}>
             {m.role !== 'user' && <img src={`/assets/sprites/${member.sprite}/face.png`} className="face sm" alt="" />}
-            <div className="bubble-ui">{m.text}</div>
+            <div className="bubble-ui"><Markdown text={m.text} /></div>
           </div>
         ))}
         {streaming && (
           <div className="msg ai">
             <img src={`/assets/sprites/${member.sprite}/face.png`} className="face sm" alt="" />
-            <div className="bubble-ui">{streaming}<span className="caret">▌</span></div>
+            <div className="bubble-ui"><Markdown text={streaming} /><span className="caret">▌</span></div>
           </div>
         )}
       </div>

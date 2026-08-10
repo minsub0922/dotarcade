@@ -167,6 +167,24 @@ pre.code.diff { max-height: 300px; }
 .report-detail { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 12px; display: flex; flex-direction: column; gap: 5px; line-height: 1.5; }
 .summary-card { background: #16240f0f; border: 2px solid var(--green); border-radius: 10px; padding: 12px; }
 
+/* ---------- 마크다운 렌더 ---------- */
+.mdr { line-height: 1.65; word-break: break-word; }
+.mdr .mdr-p { margin: 2px 0; white-space: pre-wrap; }
+.mdr .mdr-h { margin: 10px 0 4px; line-height: 1.3; }
+.mdr h2.mdr-h1 { font-size: 1.28em; color: var(--accent); border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-top: 6px; }
+.mdr h3.mdr-h2 { font-size: 1.13em; color: var(--blue); }
+.mdr h4.mdr-h3, .mdr h4.mdr-h4 { font-size: 1.03em; color: var(--purple); }
+.mdr .mdr-list { margin: 4px 0; padding-left: 22px; }
+.mdr .mdr-list li { margin: 3px 0; }
+.mdr .mdr-quote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--blue); color: var(--muted); white-space: pre-wrap; }
+.mdr .mdr-hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+.mdr .mdr-table { border-collapse: collapse; margin: 6px 0; font-size: .95em; max-width: 100%; }
+.mdr .mdr-table th, .mdr .mdr-table td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
+.mdr .mdr-table th { background: var(--panel2); color: var(--accent); }
+.mdr a { color: var(--blue); }
+.mdr .mdr-code { margin: 6px 0; }
+.bubble-ui .mdr .mdr-p { margin: 1px 0; }
+
 /* ---------- 리포트 팝업 ---------- */
 .report-modal { border-color: var(--accent); }
 .report-body { min-height: 320px; max-height: 62vh; }

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../state/store.js'
 import { TEAM, PLAYER } from '../data/personas.js'
 import { PHASES } from '../meeting/prompts.js'
+import Markdown from './Markdown.jsx'
 
 const face = id => id === 'player'
   ? '/assets/sprites/player/face.png'
@@ -61,7 +62,7 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
                   <div className="m-name" style={{ color: colorOf(e.agentId) }}>
                     {nameOf(e.agentId)} {e.kind === 'qa' && '· QA'} {e.kind === 'note' && '· 조사 메모'}
                   </div>
-                  <div className={`m-text ${isDoc ? 'doc' : ''}`}>{e.text}</div>
+                  <div className={`m-text ${isDoc ? 'doc' : ''}`}><Markdown text={e.text} /></div>
                 </div>
               </div>
             )
@@ -76,7 +77,9 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
         </div>
       ) : (
         <div className="feed doc-view">
-          <pre className={tab === 'code' ? 'code' : 'md'}>{meeting.artifacts[tab] || ''}</pre>
+          {tab === 'code'
+            ? <pre className="code">{meeting.artifacts[tab] || ''}</pre>
+            : <Markdown className="md" text={meeting.artifacts[tab] || ''} />}
         </div>
       )}
 
