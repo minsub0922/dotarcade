@@ -67,7 +67,8 @@ export class ArcadeSim {
 
     S().setArcade({
       gameId: game.id, title: game.title, emoji: game.emoji, version,
-      status: 'running', startedAt, reports: [], progress: 0, summary: null, playing: []
+      status: 'running', startedAt, reports: [], progress: 0, summary: null, playing: [],
+      summaryStream: '', reportSeen: false
     })
 
     // ---- 게임 번들 & 기획 요약 로드 ----
@@ -119,7 +120,8 @@ export class ArcadeSim {
       w.bubble(v.id, '🕹️ 플레이 시작!', 2500)
       S().setArcade({ playing: [...(S().arcade?.playing || []), v.id] })
 
-      // 실제 봇 플레이 (미니 라이브 뷰 슬롯)
+      // 실제 봇 플레이 (라이브 뷰 슬롯 — React가 이름표 슬롯을 그릴 시간을 준다)
+      await sleep(120)
       const slot = document.getElementById(`sim-slot-${v.id}`) || document.getElementById('sim-slot-pool')
       let telemetry = { score: 0, ms: 0, presses: 0, errors: 0, overFired: false }
       if (slot && code) telemetry = await this._botPlay(code, v, slot)
@@ -165,18 +167,23 @@ export class ArcadeSim {
 
     // ---- 종합 리포트 ----
     const avg = reports.length ? +(reports.reduce((s, r) => s + (r.score || 0), 0) / reports.length).toFixed(1) : 0
-    S().setArcade({ status: 'summarizing' })
+    w.simMode = false
+    VISITORS.forEach(v => { const a = w.agent(v.id); if (a) a.meta.ambientArcade = true })   // 손님들은 남아서 배회
+    S().setArcade({ status: 'summarizing', avg, summaryStream: '' })
     let summary = ''
     try {
       const digest = reports.map(r =>
         `${r.visitor.name}(${r.visitor.age}, ${r.visitor.job}) ${r.score}점: ${r.oneLiner} / 재미:${r.detail.fun} 난이도:${r.detail.difficulty} 조작:${r.detail.controls} 그래픽:${r.detail.graphics}${r.bugs?.length ? ' 버그:' + r.bugs.join(';') : ''} 제안:${(r.suggestions || []).join(';')}`
       ).join('\n')
-      const out = await api.generate({
+      // 스트리밍 생성 — 리포트 팝업에 실시간 표시
+      const out = await api.stream({
         system: '당신은 DOTCADE 오락실의 운영 분석가입니다. 한국어로 간결하고 실행 가능한 리포트를 씁니다.',
         messages: [{
           role: 'user', text: `게임 「${game.title}」 ${version}의 오락실 손님 ${reports.length}명 피드백입니다:\n\n${digest.slice(0, 9000)}\n\n평균 점수: ${avg}/10\n\n마크다운 종합 리포트를 작성하세요:\n# 오락실 반응 리포트 — ${game.title} ${version}\n**총평** (2문장)\n## 강점 (불릿 2~3)\n## 약점 (불릿 2~3)\n## 연령대별 반응 (10대/2030/4050 한 줄씩)\n## 다음 버전 우선순위 (번호 1~3, 구체적으로)`
         }],
         hint: 'summary', model: 'smart'
+      }, delta => {
+        S().setArcade({ summaryStream: (S().arcade?.summaryStream || '') + delta })
       })
       summary = out.text
     } catch (e) { summary = `(요약 생성 실패: ${e.message})` }

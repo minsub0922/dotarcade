@@ -69,6 +69,9 @@ export default function ArcadePanel({ sim, onBack }) {
         {running && <button className="danger" onClick={() => { sim.cancel(); useStore.getState().setArcade({ status: 'cancelled' }) }}>시뮬레이션 중단</button>}
         {!running && (
           <>
+            {arcade.summary && (
+              <button className="accent" onClick={() => useStore.getState().setArcade({ reportSeen: false })}>📊 리포트 보기</button>
+            )}
             <button onClick={onBack}>🏢 사무실로 돌아가기</button>
             <button onClick={() => useStore.getState().setArcade(null) || closePanel()}>닫기</button>
           </>

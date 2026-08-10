@@ -3,6 +3,12 @@ import { astar, randomWalkable } from './pathfind.js'
 
 const T = 48
 const DIRS = ['down', 'left', 'right', 'up']
+const ARCADE_ZONE = [8, 6, 24, 15]   // 손님이 배회하는 오락실 구역
+const ARCADE_LINES = [
+  '우와, 신작 나왔대!', '이 캐비닛 내 최고기록 있는데', '동전 챙겨왔지 ㅎㅎ', '오늘 신기록 간다',
+  '🕹️ 이 게임 재밌겠다', '구경만 해도 재밌네', '한 판만 더...', '여기 분위기 좋다',
+  '옆 사람 플레이 잘하네', '이따 랭킹 봐야지'
+]
 
 export class Engine {
   constructor(canvas, { maps, manifest, onHint, onInteract }) {
@@ -66,6 +72,19 @@ export class Engine {
   removeAgent(id) { this.agents.delete(id) }
   agent(id) { return this.agents.get(id) }
   clearAgents() { this.agents.clear() }
+
+  // 오락실 상시 손님: 시뮬레이션이 없어도 맵에 활기가 돌도록 배회 NPC 유지
+  ensureArcadeAmbient(visitors) {
+    for (const v of visitors) {
+      const existed = this.agents.get(v.id)
+      if (existed) { existed.meta.ambientArcade = true; continue }
+      const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE) || this.maps.arcade.spawn
+      const e = this.addAgent(v.id, v.id, spot, { label: `${v.name}(${v.age})`, color: '#c9d1ff', map: 'arcade' })
+      e.meta.ambientArcade = true
+      e.idleT = 800 + Math.random() * 6000
+      e.dir = DIRS[Math.floor(Math.random() * DIRS.length)]
+    }
+  }
 
   grid() { return this.maps[this.map].collision }
 
@@ -196,6 +215,23 @@ export class Engine {
             this.bubble(e.id, e.ambient[Math.floor(Math.random() * e.ambient.length)], 3600)
           }
         }
+      } else if (!this.simMode && e.map === 'arcade' && e.meta.ambientArcade && !e.meta.chatting) {
+        // 오락실 손님 배회 FSM: 돌아다니기 · 캐비닛 구경 · 혼잣말
+        e.idleT -= dt
+        if (e.idleT <= 0) {
+          e.idleT = 8000 + Math.random() * 16000
+          const r = Math.random()
+          if (r < 0.45) {
+            const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE)
+            if (spot) this.goTo(e.id, spot)
+          } else if (r < 0.7) {
+            const cabs = this.maps.arcade.cabinets
+            const c = cabs[Math.floor(Math.random() * cabs.length)]
+            this.goTo(e.id, c.spot, () => this.face(e.id, 'up'))
+          } else {
+            this.bubble(e.id, ARCADE_LINES[Math.floor(Math.random() * ARCADE_LINES.length)], 3400)
+          }
+        }
       }
       if (e.bubble && performance.now() > e.bubble.until) e.bubble = null
     }
@@ -216,7 +252,7 @@ export class Engine {
         const d = Math.hypot(e.x - p.x, e.y - p.y)
         if (d < T * 1.5 && d < bd) { bd = d; best = e }
       }
-      if (best) hint = { type: 'agent', id: best.id, label: `${best.label}와 대화` }
+      if (best) hint = { type: 'agent', id: best.id, label: `${best.meta.shortName || best.label}와 대화` }
       const sh = this.maps.office.shelf
       if (!hint && sh.front.some(([x, y]) => Math.abs(x - ptx) <= 0 && Math.abs(y - pty) <= 0)) {
         hint = { type: 'shelf', label: '게임팩 진열대 열기' }

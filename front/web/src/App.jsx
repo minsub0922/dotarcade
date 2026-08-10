@@ -15,6 +15,7 @@ import Settings from './ui/Settings.jsx'
 import MeetingStart from './ui/MeetingStart.jsx'
 import Help from './ui/Help.jsx'
 import Toasts from './ui/Toasts.jsx'
+import ReportModal from './ui/ReportModal.jsx'
 
 export default function App() {
   const cvRef = useRef(null)
@@ -59,8 +60,9 @@ export default function App() {
       const seats = maps.office.seats
       TEAM.forEach(m => {
         const s = seats[m.id]
-        const e = eng.addAgent(m.id, m.sprite, s.desk, { label: m.name, color: m.color, home: { desk: s.desk, face: s.face } })
+        const e = eng.addAgent(m.id, m.sprite, s.desk, { label: `${m.name} · ${m.role}`, color: m.color, home: { desk: s.desk, face: s.face } })
         e.ambient = m.ambient
+        e.meta.shortName = m.name
         eng.sit(m.id, s.desk, s.face)
       })
       eng.setShelfGames(gl.games)
@@ -134,6 +136,10 @@ export default function App() {
           eng.cabinetLabels[c.id] = { title: g.title, emoji: g.emoji, color: g.color, playing: false }
         })
       }
+      // 시뮬레이션이 없어도 오락실에 손님들이 놀고 있게
+      if (st.arcade?.status !== 'running') {
+        eng.ensureArcadeAmbient([...VISITORS].sort(() => Math.random() - 0.5).slice(0, 9))
+      }
     } else {
       eng.setMap('office', [26, 17])
       st.setMap('office')
@@ -159,6 +165,14 @@ export default function App() {
     try { await simRef.current.run(game) } catch (e) { console.error(e); st.toast('시뮬레이션 오류: ' + e.message, 'warn') }
   }
 
+  // 리포트 팝업 → 회의실(사무실) 복귀 + 업그레이드 회의 자연 연결
+  function returnToOffice() {
+    const st = useStore.getState()
+    if (st.map === 'arcade') switchMap()
+    const g = st.games.find(x => x.id === st.arcade?.gameId)
+    if (g) st.openPanel('meetingStart', { upgradeGame: g })
+  }
+
   const arcade = useStore(s => s.arcade)
 
   return (
@@ -181,8 +195,24 @@ export default function App() {
 
       {/* 시뮬 라이브 뷰 풀 (봇 플레이 실시간 화면) */}
       <div id="sim-slot-pool" className={`sim-pool ${arcade?.status === 'running' ? '' : 'off'}`}>
-        {arcade?.status === 'running' && <div className="sim-pool-label">LIVE 봇 플레이</div>}
+        {arcade?.status === 'running' && (
+          <div className="sim-pool-label">🔴 LIVE 봇 플레이 · {(arcade.playing || []).length}명 플레이 중</div>
+        )}
+        {arcade?.status === 'running' && (arcade.playing || []).map(id => {
+          const v = VISITORS.find(x => x.id === id)
+          return v ? (
+            <div key={id} className="sim-slot">
+              <div className="sim-name"><img src={`/assets/sprites/${v.id}/face.png`} alt="" />{v.name}({v.age})</div>
+              <div id={`sim-slot-${v.id}`} className="sim-frame" />
+            </div>
+          ) : null
+        })}
       </div>
+
+      {/* 오락실 종합 리포트 팝업 (스트리밍) */}
+      {arcade && !arcade.reportSeen && ['summarizing', 'done'].includes(arcade.status) && (
+        <ReportModal onReturnOffice={returnToOffice} />
+      )}
 
       {panel === 'chat' && <ChatPanel world={engRef.current} />}
       {panel === 'meeting' && <MeetingPanel meet={meetRef.current} onDeploy={deployToArcade} onPlay={id => useStore.getState().openPanel('play', { gameId: id })} />}

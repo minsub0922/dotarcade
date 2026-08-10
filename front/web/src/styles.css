@@ -72,12 +72,26 @@ code { background: #0e1122; padding: 1px 5px; border-radius: 4px; font-size: 12p
 
 /* ---------- 시뮬 라이브 뷰 ---------- */
 .sim-pool {
-  position: fixed; left: 12px; bottom: 12px; z-index: 30; display: flex; gap: 6px; flex-wrap: wrap;
-  max-width: 480px; background: rgba(16,18,34,.85); border: 2px solid var(--line); border-radius: 10px; padding: 6px;
+  position: fixed; left: 12px; bottom: 12px; z-index: 30; display: flex; gap: 10px; flex-wrap: wrap;
+  max-width: min(1060px, calc(100vw - 420px)); max-height: 46vh; overflow-y: auto;
+  background: rgba(14,16,30,.92); border: 2px solid var(--pink); border-radius: 12px; padding: 10px;
+  box-shadow: 0 14px 50px rgba(0,0,0,.55);
 }
 .sim-pool.off { opacity: 0; pointer-events: none; height: 1px; overflow: hidden; }
-.sim-pool iframe { width: 140px !important; height: 105px !important; border-radius: 6px; }
-.sim-pool-label { position: absolute; top: -22px; left: 0; font-size: 11px; color: var(--pink); background: rgba(16,18,34,.9); padding: 2px 8px; border-radius: 6px; }
+.sim-pool iframe { width: 236px !important; height: 177px !important; border-radius: 8px; background: #000; }
+.sim-pool-label {
+  position: absolute; top: -26px; left: 0; font-size: 12.5px; color: var(--pink);
+  background: rgba(16,18,34,.95); border: 1px solid var(--pink); padding: 3px 10px; border-radius: 8px;
+  animation: fade 1.4s infinite;
+}
+.sim-slot { position: relative; }
+.sim-frame { width: 236px; height: 177px; border-radius: 8px; background: #000; overflow: hidden; }
+.sim-name {
+  position: absolute; top: 4px; left: 4px; z-index: 2; display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: #fff; background: rgba(12,14,26,.82); padding: 2px 7px 2px 3px; border-radius: 7px;
+  pointer-events: none;
+}
+.sim-name img { width: 18px; height: 18px; border-radius: 4px; image-rendering: pixelated; }
 
 /* ---------- 사이드 패널 ---------- */
 .panel.side {
@@ -152,6 +166,13 @@ pre.code.diff { max-height: 300px; }
 .stars i { color: #3a4166; font-style: normal; }
 .report-detail { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 12px; display: flex; flex-direction: column; gap: 5px; line-height: 1.5; }
 .summary-card { background: #16240f0f; border: 2px solid var(--green); border-radius: 10px; padding: 12px; }
+
+/* ---------- 리포트 팝업 ---------- */
+.report-modal { border-color: var(--accent); }
+.report-body { min-height: 320px; max-height: 62vh; }
+.report-body .md { font-size: 13.5px; line-height: 1.75; }
+.report-modal .panel-foot { border-top: 2px solid var(--line); }
+.report-modal .caret { color: var(--accent); }
 
 /* ---------- 모달 ---------- */
 .modal-back { position: fixed; inset: 0; background: rgba(6,8,16,.72); display: flex; align-items: center; justify-content: center; z-index: 50; }
