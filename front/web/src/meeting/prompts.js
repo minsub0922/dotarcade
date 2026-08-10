@@ -1,5 +1,6 @@
 // DOTCADE — 회의/대화/피드백 프롬프트 빌더
 import { TEAM } from '../data/personas.js'
+import { CRITERIA } from '../data/criteria.js'
 
 export const CONTRACT = `[게임팩 계약 — 반드시 준수]
 window.game = {
@@ -150,6 +151,11 @@ export const FEEDBACK_SCHEMA = {
   properties: {
     score: { type: 'integer', minimum: 1, maximum: 10 },
     oneLiner: { type: 'string' },
+    ratings: {
+      type: 'object',
+      properties: Object.fromEntries(CRITERIA.map(c => [c.key, { type: 'integer', minimum: 1, maximum: 10 }])),
+      required: CRITERIA.map(c => c.key)
+    },
     detail: {
       type: 'object',
       properties: {
@@ -161,7 +167,7 @@ export const FEEDBACK_SCHEMA = {
     bugs: { type: 'array', items: { type: 'string' } },
     suggestions: { type: 'array', items: { type: 'string' } }
   },
-  required: ['score', 'oneLiner', 'detail', 'bugs', 'suggestions']
+  required: ['score', 'oneLiner', 'ratings', 'detail', 'bugs', 'suggestions']
 }
 
 export function visitorSystem(v) {
@@ -193,9 +199,11 @@ ${JSON.stringify(telemetry)}
 
 플레이 경험과 코드에서 파악한 게임성을 바탕으로, 당신 페르소나의 시선으로 평가 JSON을 작성하세요.
 - oneLiner: 페르소나 말투가 살아있는 한줄평 (40자 이내)
-- detail.fun/difficulty/controls/graphics: 각 1~2문장, 구체적으로
+- ratings: 아래 6개 기준을 각각 1~10 정수로 채점. 페르소나 기준으로 엄격하게, 잘한 축과 못한 축의 점수 차이가 분명하게 (전 축 동일 점수 금지):
+${CRITERIA.map(c => `  · ${c.key} = ${c.label} (${c.desc})`).join('\n')}
+- detail.fun/difficulty/controls/graphics: 각 1~2문장, 구체적으로 (ratings 점수와 논리적으로 일치할 것)
 - bugs: 플레이 기록의 errors>0이거나 코드에서 의심되는 문제가 있으면 기술, 없으면 []
-- suggestions: 다음 버전 제안 1~2개`
+- suggestions: 다음 버전 제안 1~2개 (가장 낮게 준 기준을 개선하는 방향 포함)`
 }
 
 export function chatSystem(member, games, recentEvents) {

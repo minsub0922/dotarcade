@@ -1,6 +1,7 @@
 // DOTCADE — 오락실 시뮬레이션: 20 손님 에이전트 병렬 피드백 파이프라인
 import { api } from '../api.js'
 import { VISITORS } from '../data/personas.js'
+import { CRITERIA, sanitizeRatings, avgRatings } from '../data/criteria.js'
 import { visitorSystem, visitorFeedbackPrompt, FEEDBACK_SCHEMA } from '../meeting/prompts.js'
 import { mountGame } from '../game/harness.js'
 import { useStore } from '../state/store.js'
@@ -140,8 +141,9 @@ export class ArcadeSim {
           personaMeta: { name: v.name, strict: v.strict }
         })
         fb = JSON.parse(out.text.replace(/```json|```/g, '').trim())
+        fb.ratings = sanitizeRatings(fb.ratings)
       } catch (e) {
-        fb = { score: 5, oneLiner: '(피드백 수집 실패)', detail: { fun: '', difficulty: '', controls: '', graphics: '' }, bugs: [], suggestions: [], error: String(e.message || e) }
+        fb = { score: 5, oneLiner: '(피드백 수집 실패)', ratings: null, detail: { fun: '', difficulty: '', controls: '', graphics: '' }, bugs: [], suggestions: [], error: String(e.message || e) }
       }
       const report = { visitor: { id: v.id, name: v.name, age: v.age, job: v.job }, telemetry, ...fb, at: Date.now() }
       reports.push(report)
@@ -167,19 +169,23 @@ export class ArcadeSim {
 
     // ---- 종합 리포트 ----
     const avg = reports.length ? +(reports.reduce((s, r) => s + (r.score || 0), 0) / reports.length).toFixed(1) : 0
+    const runRatings = avgRatings(reports.map(r => r.ratings).filter(Boolean))   // 이번 시뮬의 6축 평균
     w.simMode = false
     VISITORS.forEach(v => { const a = w.agent(v.id); if (a) a.meta.ambientArcade = true })   // 손님들은 남아서 배회
-    S().setArcade({ status: 'summarizing', avg, summaryStream: '' })
+    S().setArcade({ status: 'summarizing', avg, ratings: runRatings, summaryStream: '' })
     let summary = ''
     try {
       const digest = reports.map(r =>
-        `${r.visitor.name}(${r.visitor.age}, ${r.visitor.job}) ${r.score}점: ${r.oneLiner} / 재미:${r.detail.fun} 난이도:${r.detail.difficulty} 조작:${r.detail.controls} 그래픽:${r.detail.graphics}${r.bugs?.length ? ' 버그:' + r.bugs.join(';') : ''} 제안:${(r.suggestions || []).join(';')}`
+        `${r.visitor.name}(${r.visitor.age}, ${r.visitor.job}) ${r.score}점${r.ratings ? ` [${CRITERIA.map(c => `${c.label}${r.ratings[c.key] ?? '-'}`).join(' ')}]` : ''}: ${r.oneLiner} / 재미:${r.detail.fun} 난이도:${r.detail.difficulty} 조작:${r.detail.controls} 그래픽:${r.detail.graphics}${r.bugs?.length ? ' 버그:' + r.bugs.join(';') : ''} 제안:${(r.suggestions || []).join(';')}`
       ).join('\n')
+      const axisLine = runRatings
+        ? `\n6개 기준 평균: ${CRITERIA.map(c => `${c.label} ${runRatings[c.key] ?? '-'}`).join(' · ')}`
+        : ''
       // 스트리밍 생성 — 리포트 팝업에 실시간 표시
       const out = await api.stream({
         system: '당신은 DOTCADE 오락실의 운영 분석가입니다. 한국어로 간결하고 실행 가능한 리포트를 씁니다.',
         messages: [{
-          role: 'user', text: `게임 「${game.title}」 ${version}의 오락실 손님 ${reports.length}명 피드백입니다:\n\n${digest.slice(0, 9000)}\n\n평균 점수: ${avg}/10\n\n마크다운 종합 리포트를 작성하세요:\n# 오락실 반응 리포트 — ${game.title} ${version}\n**총평** (2문장)\n## 강점 (불릿 2~3)\n## 약점 (불릿 2~3)\n## 연령대별 반응 (10대/2030/4050 한 줄씩)\n## 다음 버전 우선순위 (번호 1~3, 구체적으로)`
+          role: 'user', text: `게임 「${game.title}」 ${version}의 오락실 손님 ${reports.length}명 피드백입니다:\n\n${digest.slice(0, 9000)}\n\n평균 점수: ${avg}/10${axisLine}\n\n마크다운 종합 리포트를 작성하세요:\n# 오락실 반응 리포트 — ${game.title} ${version}\n**총평** (2문장)\n## 평가 기준 분석 (6개 기준 평균을 근거로 가장 강한 축 1~2개와 가장 약한 축 1~2개를 해석)\n## 강점 (불릿 2~3)\n## 약점 (불릿 2~3)\n## 연령대별 반응 (10대/2030/4050 한 줄씩)\n## 다음 버전 우선순위 (번호 1~3, 약한 평가 축 개선을 반영해 구체적으로)`
         }],
         hint: 'summary', model: 'smart'
       }, delta => {
@@ -188,7 +194,7 @@ export class ArcadeSim {
       summary = out.text
     } catch (e) { summary = `(요약 생성 실패: ${e.message})` }
 
-    await api.saveFeedback(game.id, { version, reports, summary, avg }).catch(() => {})
+    await api.saveFeedback(game.id, { version, reports, summary, avg, ratings: runRatings }).catch(() => {})
     api.ragUpsert([{
       id: `fb-${game.id}-${version}`, kind: 'feedback', gameId: game.id,
       text: `${game.title} ${version} 오락실 반응(평균 ${avg}/10): ${summary.slice(0, 1500)}`

@@ -117,8 +117,18 @@ function mockText({ hint = 'chat', system = '', user = '', personaMeta = {} }) {
       const strict = personaMeta.strict ?? 5
       const base = 8.5 - strict * 0.35 + ((seed % 100) / 100) * 2 - 1
       const score = Math.max(2, Math.min(10, Math.round(base)))
+      const s = Math.abs(seed)
+      const ax = off => Math.max(1, Math.min(10, Math.round(base + off)))
       return JSON.stringify({
         score,
+        ratings: {
+          fun: ax(((s >> 1) % 3) - 1),
+          controls: ax(((s >> 2) % 4) - 2),
+          balance: ax(((s >> 3) % 3) - 1),
+          graphics: ax(((s >> 4) % 4) - 1),
+          immersion: ax(((s >> 5) % 3) - 2),
+          originality: ax(((s >> 6) % 5) - 2)
+        },
         oneLiner: pick([
           '조작이 바로 손에 익어서 좋았어요', '난이도가 좀 아쉽지만 손맛은 있네요',
           '한 판만 더 하고 싶어지는 게임', '그래픽 감성은 좋은데 변화가 더 필요해요',

@@ -32,7 +32,7 @@ export default function App() {
     let alive = true
     ;(async () => {
       // 프로필 쿠키 발급을 위해 config를 먼저 (첫 접속 시 브라우저별 DB 생성)
-      const cfg = await api.config().catch(() => ({ llm: 'unknown', models: {} }))
+      const cfg = await api.config().catch(() => ({ llm: 'unknown', models: {}, offline: true }))
       const [maps, manifest, gl] = await Promise.all([
         fetch('/assets/maps.json').then(r => r.json()),
         fetch('/assets/sprites/sprites.json').then(r => r.json()),
@@ -41,6 +41,9 @@ export default function App() {
       if (!alive) return
       useStore.getState().setConfig(cfg)
       useStore.getState().setGames(gl.games)
+      if (cfg.offline) {
+        useStore.getState().toast('⚠️ 백엔드(:5175)에 연결할 수 없어요 — 게임팩이 비어 보입니다. START_DOTCADE를 다시 실행해 주세요.', 'warn')
+      }
 
       const eng = new Engine(cvRef.current, {
         maps: { office: maps.office, arcade: maps.arcade },

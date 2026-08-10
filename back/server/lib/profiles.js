@@ -7,6 +7,7 @@ import crypto from 'node:crypto'
 import { DB, DATA_DIR } from './db.js'
 import { makeRepos } from './repos.js'
 import { makeRag } from './rag.js'
+import { ensureDefaults } from './seed.js'
 
 const SEED_DIR = path.join(DATA_DIR, 'seed')
 const PROFILES_DIR = path.join(DATA_DIR, 'profiles')
@@ -45,8 +46,7 @@ export function seedCtx() {
   return _seedCtx
 }
 
-export function getProfile(pid) {
-  if (cache.has(pid)) return cache.get(pid)
+async function buildProfile(pid) {
   const base = path.join(PROFILES_DIR, pid)
   if (!fs.existsSync(base)) {
     _seedCtx?.db.flush() // 시드에 쓰기 지연이 남아있으면 반영 후 복제
@@ -54,8 +54,18 @@ export function getProfile(pid) {
     console.log(`   새 브라우저 프로필 생성: ${pid} (seed 복제)`)
   }
   const ctx = ctxFor(base, pid)
-  cache.set(pid, ctx)
+  // 기본 게임 3종(픽셀 러너·메테오 닷지·스네이크 클래식)은 어떤 프로필에도 항상 존재하도록 보장
+  const healed = await ensureDefaults(ctx).catch(e => { console.error('기본 게임 복구 실패:', e.message); return 0 })
+  if (healed) console.log(`   프로필 ${pid}: 기본 게임 ${healed}종 복구`)
   return ctx
+}
+
+// 같은 프로필의 동시 첫 요청이 중복 초기화하지 않도록 promise를 캐시
+export function getProfile(pid) {
+  if (!cache.has(pid)) {
+    cache.set(pid, buildProfile(pid).catch(e => { cache.delete(pid); throw e }))
+  }
+  return cache.get(pid)
 }
 
 const parseCookies = req => Object.fromEntries(
@@ -66,14 +76,14 @@ const parseCookies = req => Object.fromEntries(
 )
 
 // /api·/play 요청마다 쿠키로 프로필 식별 (없으면 발급 + seed 복제)
-export function profileMiddleware(req, res, next) {
+export async function profileMiddleware(req, res, next) {
   let pid = parseCookies(req)[COOKIE]
   if (!pid || !/^p[a-f0-9]{8,64}$/.test(pid)) {
     pid = 'p' + crypto.randomBytes(8).toString('hex')
     res.setHeader('Set-Cookie', `${COOKIE}=${pid}; Path=/; Max-Age=31536000; SameSite=Lax`)
   }
   try {
-    req.p = getProfile(pid)
+    req.p = await getProfile(pid)
     next()
   } catch (e) {
     res.status(500).json({ error: '프로필 초기화 실패: ' + String(e.message || e) })

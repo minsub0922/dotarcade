@@ -1,6 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react'
 import { useStore } from '../state/store.js'
 import Markdown from './Markdown.jsx'
+import Radar from './Radar.jsx'
+import { CRITERIA } from '../data/criteria.js'
 
 const Star = ({ n }) => <span className="stars">{'★'.repeat(Math.max(1, Math.round(n / 2)))}<i>{'★'.repeat(5 - Math.max(1, Math.round(n / 2)))}</i></span>
 
@@ -35,6 +37,11 @@ export default function ArcadePanel({ sim, onBack }) {
         {arcade.status === 'summarizing' && <div className="sys-line pulse-text">📊 종합 리포트 작성 중…</div>}
         {arcade.status === 'done' && arcade.summary && (
           <div className="summary-card">
+            {arcade.ratings && (
+              <div className="summary-radar">
+                <Radar ratings={arcade.ratings} size={150} color="#ffd24a" />
+              </div>
+            )}
             <Markdown className="md" text={arcade.summary} />
           </div>
         )}
@@ -50,6 +57,13 @@ export default function ArcadePanel({ sim, onBack }) {
             </div>
             {open === i && (
               <div className="report-detail">
+                {r.ratings && (
+                  <div className="axis-chips">
+                    {CRITERIA.map(c => r.ratings[c.key] != null && (
+                      <span key={c.key} className="axis-chip" title={c.desc}>{c.label} <b>{r.ratings[c.key]}</b></span>
+                    ))}
+                  </div>
+                )}
                 <div>🎯 <b>재미</b> {r.detail.fun}</div>
                 <div>📈 <b>난이도</b> {r.detail.difficulty}</div>
                 <div>🎮 <b>조작</b> {r.detail.controls}</div>

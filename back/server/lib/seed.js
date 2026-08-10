@@ -32,30 +32,42 @@ const DEFAULTS = [
   }
 ]
 
-export async function seedDefaults({ db, repos }) {
-  let seeded = 0
+const defaultFiles = (g, now) => ({
+  'game.js': fs.readFileSync(path.join(SRC, g.id, 'game.js'), 'utf8'),
+  'meta.json': JSON.stringify({ id: g.id, title: g.title, desc: g.desc, genre: g.genre, controls: g.controls, emoji: g.emoji, color: g.color }, null, 2),
+  'README.md': `# ${g.emoji} ${g.title}\n\n${g.desc}\n\n- 장르: ${g.genre}\n- 조작: ${g.controls.join(', ')}\n- 제작: DOTCADE 스튜디오 (기본 게임)\n\n## 실행\nDOTCADE 라이브러리에서 ▶ 플레이 또는 \`/play/${g.id}\` 공유 링크.\n`,
+  'docs/prd.md': g.prd,
+  'docs/design.md': g.design,
+  'docs/architecture.md': g.arch,
+  'CHANGELOG.md': `# Changelog\n\n## v1.0.0 (${now.slice(0, 10)})\n- 최초 릴리즈 (DOTCADE 기본 게임)\n`
+})
+
+const defaultEntry = (g, now) => ({
+  id: g.id, title: g.title, desc: g.desc, genre: g.genre, emoji: g.emoji, color: g.color,
+  controls: g.controls, version: 'v1.0.0',
+  versions: [{ v: 'v1.0.0', date: now, message: '최초 릴리즈 (기본 게임)' }],
+  source: 'default', createdAt: now, updatedAt: now, feedback: {}, meetings: []
+})
+
+// 기본 게임 3종을 보장 — DB 항목·git 레포 중 없는 쪽만 복구 (seed와 각 프로필 모두에 사용)
+export async function ensureDefaults({ db, repos }) {
+  let healed = 0
   for (const g of DEFAULTS) {
-    if (db.game(g.id)) continue
-    const code = fs.readFileSync(path.join(SRC, g.id, 'game.js'), 'utf8')
+    const inDb = !!db.game(g.id)
+    const hasRepo = repos.exists(g.id)
+    if (inDb && hasRepo) continue
     const now = new Date().toISOString()
-    const files = {
-      'game.js': code,
-      'meta.json': JSON.stringify({ id: g.id, title: g.title, desc: g.desc, genre: g.genre, controls: g.controls, emoji: g.emoji, color: g.color }, null, 2),
-      'README.md': `# ${g.emoji} ${g.title}\n\n${g.desc}\n\n- 장르: ${g.genre}\n- 조작: ${g.controls.join(', ')}\n- 제작: DOTCADE 스튜디오 (기본 게임)\n\n## 실행\nDOTCADE 라이브러리에서 ▶ 플레이 또는 \`/play/${g.id}\` 공유 링크.\n`,
-      'docs/prd.md': g.prd,
-      'docs/design.md': g.design,
-      'docs/architecture.md': g.arch,
-      'CHANGELOG.md': `# Changelog\n\n## v1.0.0 (${now.slice(0, 10)})\n- 최초 릴리즈 (DOTCADE 기본 게임)\n`
+    if (!hasRepo) {
+      await repos.create(g.id, defaultFiles(g, now), `${g.title} v1.0.0 최초 릴리즈`, 'v1.0.0')
     }
-    await repos.create(g.id, files, `${g.title} v1.0.0 최초 릴리즈`, 'v1.0.0')
-    db.data.games.push({
-      id: g.id, title: g.title, desc: g.desc, genre: g.genre, emoji: g.emoji, color: g.color,
-      controls: g.controls, version: 'v1.0.0',
-      versions: [{ v: 'v1.0.0', date: now, message: '최초 릴리즈 (기본 게임)' }],
-      source: 'default', createdAt: now, updatedAt: now, feedback: {}, meetings: []
-    })
-    seeded++
+    if (!inDb) {
+      db.data.games.push(defaultEntry(g, now))
+    }
+    healed++
   }
-  if (seeded) db.flush()
-  return seeded
+  if (healed) db.flush()
+  return healed
 }
+
+// 하위 호환 별칭 (부팅 시 seed에 대해 호출)
+export const seedDefaults = ensureDefaults

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react'
 import { useStore } from '../state/store.js'
 import { api } from '../api.js'
 import Markdown from './Markdown.jsx'
+import Radar from './Radar.jsx'
+import { CRITERIA, strongWeak } from '../data/criteria.js'
 
 export default function Library({ onPlay, onUpgrade, onDeploy }) {
   const games = useStore(s => s.games)
@@ -48,12 +50,25 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
           <div className="game-grid">
             {games.map(g => {
               const fb = g.feedback?.[g.version]
+              const st = g.stats
+              const sw = st?.ratings ? strongWeak(st.ratings) : null
               return (
                 <div key={g.id} className="game-card" style={{ '--c': g.color }} onClick={() => setSel(g.id)}>
                   <div className="cart" style={{ background: g.color }}><span>{g.emoji}</span></div>
                   <b>{g.title}</b>
                   <div className="tiny muted">{g.version} · {g.genre}{g.source === 'meeting' ? ' · 회의 제작' : ''}</div>
-                  {fb?.avg != null && <div className="tiny">⭐ 오락실 평균 <b>{fb.avg}</b>/10</div>}
+                  {st?.ratings ? (
+                    <>
+                      <Radar ratings={st.ratings} size={100} color={g.color}
+                        title={CRITERIA.map(c => `${c.label} ${st.ratings[c.key] ?? '-'}`).join(' · ')} />
+                      <div className="tiny">⭐ <b>{st.avgScore ?? fb?.avg ?? '-'}</b>/10 · 시뮬 {st.runs}회 · {st.reports}명</div>
+                      {sw && <div className="tiny sw-line"><b className="good">▲ {sw.top[0]} {sw.top[1]}</b> <b className="bad">▼ {sw.low[0]} {sw.low[1]}</b></div>}
+                    </>
+                  ) : (
+                    fb?.avg != null
+                      ? <div className="tiny">⭐ 오락실 평균 <b>{fb.avg}</b>/10</div>
+                      : <div className="tiny muted radar-empty">오락실 평가 전</div>
+                  )}
                 </div>
               )
             })}
@@ -97,6 +112,23 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
               <div>제작 <b>{game.source === 'default' ? '기본 게임' : 'BMAD 회의'}</b></div>
               {fb?.avg != null && <div>오락실 평균 <b>⭐ {fb.avg}/10</b> ({fb.reports?.length}명)</div>}
             </div>
+            {game.stats?.ratings && (() => {
+              const sw = strongWeak(game.stats.ratings)
+              return (
+                <div className="info-radar">
+                  <Radar ratings={game.stats.ratings} size={180} color={game.color} values />
+                  <div className="report-radar-side">
+                    <div className="tiny muted">누적 평가 — 시뮬레이션 <b>{game.stats.runs}회</b> · 손님 <b>{game.stats.reports}명</b>{game.stats.avgScore != null && <> · 종합 <b>⭐ {game.stats.avgScore}/10</b></>}</div>
+                    <div className="axis-chips">
+                      {CRITERIA.map(c => game.stats.ratings[c.key] != null && (
+                        <span key={c.key} className="axis-chip" title={c.desc}>{c.label} <b>{game.stats.ratings[c.key]}</b></span>
+                      ))}
+                    </div>
+                    {sw && <div className="sw-line">강점 <b className="good">▲ {sw.top[0]} {sw.top[1]}</b> · 약점 <b className="bad">▼ {sw.low[0]} {sw.low[1]}</b></div>}
+                  </div>
+                </div>
+              )
+            })()}
             <div className="tiny muted">공유: 같은 네트워크의 누구나 <code>{location.origin}/play/{game.id}</code> 에서 바로 플레이할 수 있습니다.</div>
           </div>
         )}
@@ -154,7 +186,17 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
             {Object.entries(game.feedback || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([v, f]) => (
               <div key={v} className="fb-version">
                 <div className="fb-head"><b className="ver">{v}</b> 평균 <b>⭐ {f.avg}/10</b> · {f.reports?.length}명 · {f.at?.slice(0, 10)}</div>
-                {f.summary && <Markdown className="md" text={f.summary} />}
+                <div className="fb-flex">
+                  {f.ratings && (
+                    <div className="fb-radar">
+                      <Radar ratings={f.ratings} compare={game.stats?.runs > 1 ? game.stats.ratings : null} size={132} color={game.color} compareColor="#7dc7ff" />
+                      <div className="tiny muted" style={{ textAlign: 'center' }}>이 시뮬{game.stats?.runs > 1 ? ' vs 누적(점선)' : ''}</div>
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {f.summary && <Markdown className="md" text={f.summary} />}
+                  </div>
+                </div>
                 <div className="fb-chips">
                   {(f.reports || []).map((r, i) => (
                     <span key={i} className="chip" title={`${r.detail?.fun || ''}\n${r.detail?.difficulty || ''}`}>

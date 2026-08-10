@@ -170,10 +170,35 @@ app.post('/api/games/:id/feedback', (req, res) => {
   const { db } = req.p
   const g = db.game(req.params.id)
   if (!g) return res.status(404).json({ error: 'not found' })
-  const { version, reports, summary, avg } = req.body
-  g.feedback[version || g.version] = { reports: reports || [], summary: summary || '', avg: avg ?? null, at: new Date().toISOString() }
+  const { version, reports, summary, avg, ratings } = req.body
+  const now = new Date().toISOString()
+  g.feedback[version || g.version] = { reports: reports || [], summary: summary || '', avg: avg ?? null, ratings: ratings || null, at: now }
+
+  // ---- 6축 평가 누적 통계: 시뮬레이션을 돌릴수록 합산 (합계/표본수 보존 → 정확한 누적 평균) ----
+  const rated = (reports || []).map(r => r && r.ratings).filter(r => r && typeof r === 'object')
+  if (rated.length) {
+    const st = g.stats = g.stats || { runs: 0, reports: 0, sums: {}, counts: {}, scoreSum: 0, scoreN: 0, history: [] }
+    st.runs += 1
+    st.reports += rated.length
+    for (const r of rated) {
+      for (const [k, v] of Object.entries(r).slice(0, 12)) {
+        const num = Number(v)
+        if (!Number.isFinite(num)) continue
+        st.sums[k] = (st.sums[k] || 0) + Math.max(1, Math.min(10, num))
+        st.counts[k] = (st.counts[k] || 0) + 1
+      }
+    }
+    for (const r of reports || []) {
+      const s = Number(r?.score)
+      if (Number.isFinite(s)) { st.scoreSum += Math.max(0, Math.min(10, s)); st.scoreN += 1 }
+    }
+    st.ratings = Object.fromEntries(Object.keys(st.sums).map(k => [k, +(st.sums[k] / (st.counts[k] || 1)).toFixed(1)]))
+    st.avgScore = st.scoreN ? +(st.scoreSum / st.scoreN).toFixed(1) : null
+    st.history = [...(st.history || []), { at: now, version: version || g.version, n: rated.length, avg: avg ?? null, ratings: ratings || null }].slice(-20)
+  }
+
   db.save()
-  res.json({ ok: true })
+  res.json({ ok: true, stats: g.stats || null })
 })
 
 app.delete('/api/games/:id', (req, res) => {
