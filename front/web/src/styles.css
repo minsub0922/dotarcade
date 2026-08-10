@@ -255,3 +255,31 @@ pre.code.diff { max-height: 300px; }
   .modal.big { width: 94vw; }
   .logo .sub { display: none; }
 }
+
+/* ===== BMAD 단계 대형 스테퍼 ===== */
+.ps { padding: 10px 12px 9px; border-bottom: 2px solid var(--line); background: linear-gradient(180deg, rgba(255,210,74,.07), transparent); }
+.ps-now { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+.ps-now-icon { font-size: 21px; }
+.ps-now b { font-size: 18px; color: var(--accent); }
+.ps-bmad { flex: 1; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-count { font-size: 12px; font-weight: 800; color: var(--accent); background: var(--panel2); padding: 2px 9px; border-radius: 10px; }
+.ps-track { position: relative; display: flex; justify-content: space-between; }
+.ps-track::before { content: ''; position: absolute; left: 16px; right: 16px; top: 13px; height: 4px; background: var(--panel2); border-radius: 2px; }
+.ps-fill { position: absolute; left: 16px; top: 13px; height: 4px; max-width: calc(100% - 32px); background: linear-gradient(90deg, var(--green), var(--accent)); border-radius: 2px; transition: width .6s; }
+.ps-step { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; width: 42px; }
+.ps-dot { width: 27px; height: 27px; border-radius: 50%; background: var(--panel2); border: 2px solid var(--line); display: flex; align-items: center; justify-content: center; font-size: 12px; transition: all .3s; }
+.ps-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.ps-step.done .ps-dot { background: var(--green); border-color: var(--green); color: #10241a; font-weight: 900; font-size: 14px; }
+.ps-step.done .ps-label { color: var(--green); }
+.ps-step.now .ps-dot { background: var(--accent); border-color: #fff; transform: scale(1.28); font-size: 14px; animation: psPulse 1.4s infinite; }
+.ps-step.now .ps-label { color: var(--accent); font-weight: 800; font-size: 11px; }
+@keyframes psPulse { 0%, 100% { box-shadow: 0 0 8px rgba(255,210,74,.55); } 50% { box-shadow: 0 0 20px rgba(255,210,74,1); } }
+
+/* 패널 접힘 상태 회의 진행 플로팅 배지 */
+.meeting-float { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 9px; padding: 10px 16px; font-size: 14px; background: rgba(14,16,30,.95); border: 2px solid var(--accent); border-radius: 12px; color: var(--text); cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,.55); }
+.meeting-float:hover { transform: translateX(-50%) translateY(-1px); }
+.meeting-float b { color: var(--accent); font-size: 16px; }
+.mf-dot { width: 10px; height: 10px; border-radius: 50%; background: #ff5566; animation: fade 1s infinite; }
+.mf-count { font-weight: 800; font-size: 13px; color: var(--accent); }
+.mf-bar { width: 86px; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
+.mf-bar span { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--accent)); transition: width .6s; }

@@ -1,5 +1,5 @@
 // DOTCADE — 회의/대화/피드백 프롬프트 빌더
-import { TEAM, PLAYER } from '../data/personas.js'
+import { TEAM } from '../data/personas.js'
 
 export const CONTRACT = `[게임팩 계약 — 반드시 준수]
 window.game = {
@@ -23,7 +23,7 @@ window.game = {
 export function studioContext(games, extra = '') {
   const list = games.slice(0, 8).map(g => `- ${g.emoji} ${g.title} ${g.version} (${g.genre})`).join('\n')
   return `[스튜디오 현황]
-당신은 도트 게임 스튜디오 "DOTCADE"의 팀원입니다. 팀장은 ${PLAYER.name}님.
+당신은 도트 게임 스튜디오 "DOTCADE"의 팀원입니다. 당신의 상사는 팀장님(사용자)입니다. 호칭은 항상 "팀장님".
 팀원: ${TEAM.map(t => `${t.name}(${t.role})`).join(', ')}
 보유 게임팩:\n${list || '- (아직 없음)'}
 ${extra}`
@@ -201,5 +201,5 @@ ${JSON.stringify(telemetry)}
 export function chatSystem(member, games, recentEvents) {
   return personaSystem(member, games, recentEvents ? `[최근 스튜디오 소식]\n${recentEvents}` : '') + `
 
-지금은 사무실에서 팀장 ${PLAYER.name}님과 1:1 잡담/업무 대화 중입니다. 2~4문장으로 자연스럽게 대화하세요. 필요하면 회의 안건을 제안해도 좋습니다.`
+지금은 사무실에서 팀장님과 1:1 잡담/업무 대화 중입니다. 상대는 "팀장님"이라고 부르세요. 2~4문장으로 자연스럽게 대화하세요. 필요하면 회의 안건을 제안해도 좋습니다.`
 }

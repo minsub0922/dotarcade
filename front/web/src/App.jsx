@@ -16,6 +16,8 @@ import MeetingStart from './ui/MeetingStart.jsx'
 import Help from './ui/Help.jsx'
 import Toasts from './ui/Toasts.jsx'
 import ReportModal from './ui/ReportModal.jsx'
+import { PHASES } from './meeting/prompts.js'
+import { PHASE_ICONS } from './ui/PhaseStepper.jsx'
 
 export default function App() {
   const cvRef = useRef(null)
@@ -29,10 +31,11 @@ export default function App() {
   useEffect(() => {
     let alive = true
     ;(async () => {
-      const [maps, manifest, cfg, gl] = await Promise.all([
+      // 프로필 쿠키 발급을 위해 config를 먼저 (첫 접속 시 브라우저별 DB 생성)
+      const cfg = await api.config().catch(() => ({ llm: 'unknown', models: {} }))
+      const [maps, manifest, gl] = await Promise.all([
         fetch('/assets/maps.json').then(r => r.json()),
         fetch('/assets/sprites/sprites.json').then(r => r.json()),
-        api.config().catch(() => ({ llm: 'unknown', models: {} })),
         api.games().catch(() => ({ games: [] }))
       ])
       if (!alive) return
@@ -69,9 +72,11 @@ export default function App() {
       eng.start()
       setReady(true)
 
-      if (!localStorage.getItem('dotcade-visited')) {
+      // 첫 접속(브라우저 프로필 기준) 시 도움말 가이드 표시
+      const visitedKey = 'dotcade-visited-' + (cfg.profile || 'local')
+      if (!localStorage.getItem(visitedKey)) {
         useStore.getState().openPanel('help')
-        localStorage.setItem('dotcade-visited', '1')
+        localStorage.setItem(visitedKey, '1')
       }
     })()
     return () => { alive = false; engRef.current?.stop() }
@@ -115,6 +120,10 @@ export default function App() {
       st.openPanel('chat', { agentId: h.id })
     } else if (h.type === 'shelf') {
       st.openPanel('library')
+    } else if (h.type === 'meeting') {
+      // 회의실 근처 E — HUD '회의 시작' 버튼과 동일 동작
+      if (st.meeting?.status === 'running') st.openPanel('meeting')
+      else st.openPanel('meetingStart')
     } else if (h.type === 'door') {
       switchMap()
     } else if (h.type === 'cabinet') {
@@ -174,6 +183,8 @@ export default function App() {
   }
 
   const arcade = useStore(s => s.arcade)
+  const meeting = useStore(s => s.meeting)
+  const mIdx = meeting ? Math.max(0, PHASES.findIndex(p => p.key === meeting.phase)) : 0
 
   return (
     <div className="app">
@@ -190,6 +201,15 @@ export default function App() {
           {!ready && <div className="boot">DOTCADE 로딩 중<span className="dots">...</span></div>}
           {hint && !panel && <div className="hint-bar"><b>E</b> {hint.label}</div>}
           <div className="map-badge">{map === 'office' ? '🏢 사무실' : '🕹️ 오락실'}</div>
+          {meeting?.status === 'running' && panel !== 'meeting' && (
+            <button className="meeting-float" onClick={() => useStore.getState().openPanel('meeting')} title="회의 패널 열기">
+              <span className="mf-dot" />
+              <span>회의 진행 중</span>
+              <b>{PHASE_ICONS[PHASES[mIdx].key]} {PHASES[mIdx].label}</b>
+              <span className="mf-count">{mIdx + 1}/{PHASES.length}</span>
+              <span className="mf-bar"><span style={{ width: (mIdx / (PHASES.length - 1)) * 100 + '%' }} /></span>
+            </button>
+          )}
         </div>
       </div>
 

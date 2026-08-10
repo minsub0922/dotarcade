@@ -1,12 +1,10 @@
-// DOTCADE 서버 — Gemini 프록시 · git 게임 레포 · 공유 플레이어 · JSON DB
+// DOTCADE 서버 — Gemini 프록시 · git 게임 레포 · 공유 플레이어 · 브라우저별 독립 JSON DB
 import { config } from 'dotenv'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
 import express from 'express'
-import { db } from './lib/db.js'
-import { repos } from './lib/repos.js'
-import { rag } from './lib/rag.js'
+import { ensureSeed, seedCtx, profileMiddleware } from './lib/profiles.js'
 import { provider, llmState, detectLLM, models } from './lib/gemini.js'
 import { tavily } from './lib/tavily.js'
 import { seedDefaults } from './lib/seed.js'
@@ -17,13 +15,20 @@ config({ path: path.join(ROOT, '..', '.env') })
 const app = express()
 app.use(express.json({ limit: '4mb' }))
 
+// 브라우저별 프로필 (쿠키 → data/profiles/<id>, 최초 접속 시 seed 복제)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/play')) return profileMiddleware(req, res, next)
+  next()
+})
+
 // ---------------- config ----------------
 app.get('/api/config', (req, res) => {
   res.json({
     llm: llmState.mode, llmError: llmState.lastError, workingModel: llmState.workingModel,
     models: { smart: models.smart(), fast: models.fast(), embed: models.embed() },
     hasKey: !!process.env.BACK_GEMINI_API_KEY,
-    webSearch: tavily.enabled()
+    webSearch: tavily.enabled(),
+    profile: req.p.id
   })
 })
 app.post('/api/config/redetect', async (req, res) => res.json(await detectLLM()))
@@ -74,27 +79,28 @@ app.get('/api/search/state', (req, res) => res.json({ enabled: tavily.enabled(),
 
 // ---------------- RAG ----------------
 app.post('/api/rag/upsert', async (req, res) => {
-  try { res.json(await rag.upsert(req.body?.docs || [])) }
+  try { res.json(await req.p.rag.upsert(req.body?.docs || [])) }
   catch (e) { res.status(500).json({ error: String(e.message || e) }) }
 })
 app.post('/api/rag/query', async (req, res) => {
-  try { res.json({ results: await rag.query(req.body?.text || '', req.body?.k || 4, req.body?.filter || {}) }) }
+  try { res.json({ results: await req.p.rag.query(req.body?.text || '', req.body?.k || 4, req.body?.filter || {}) }) }
   catch (e) { res.json({ results: [], error: String(e.message || e) }) }
 })
 
 // ---------------- games ----------------
 const publicGame = g => ({ ...g })
 
-app.get('/api/games', (req, res) => res.json({ games: db.data.games.map(publicGame) }))
+app.get('/api/games', (req, res) => res.json({ games: req.p.db.data.games.map(publicGame) }))
 
 app.get('/api/games/:id', (req, res) => {
-  const g = db.game(req.params.id)
+  const g = req.p.db.game(req.params.id)
   if (!g) return res.status(404).json({ error: 'not found' })
   res.json({ game: publicGame(g) })
 })
 
 app.post('/api/games', async (req, res) => {
   try {
+    const { db, repos } = req.p
     const { id, title, desc, genre, emoji, color, controls, files, message, meetingId } = req.body
     if (db.game(id)) return res.status(409).json({ error: '이미 존재하는 id' })
     if (!files?.['game.js']) return res.status(400).json({ error: 'game.js 필요' })
@@ -113,6 +119,7 @@ app.post('/api/games', async (req, res) => {
 
 app.post('/api/games/:id/versions', async (req, res) => {
   try {
+    const { db, repos } = req.p
     const g = db.game(req.params.id)
     if (!g) return res.status(404).json({ error: 'not found' })
     const { files, message, version, meetingId } = req.body
@@ -134,22 +141,23 @@ app.post('/api/games/:id/versions', async (req, res) => {
 })
 
 app.get('/api/games/:id/files', async (req, res) => {
-  try { res.json({ files: await repos.filesAt(req.params.id, req.query.ref || 'HEAD') }) }
+  try { res.json({ files: await req.p.repos.filesAt(req.params.id, req.query.ref || 'HEAD') }) }
   catch (e) { res.status(500).json({ error: String(e.message || e) }) }
 })
 
 app.get('/api/games/:id/log', async (req, res) => {
-  try { res.json({ tags: await repos.versions(req.params.id), commits: await repos.log(req.params.id) }) }
+  try { res.json({ tags: await req.p.repos.versions(req.params.id), commits: await req.p.repos.log(req.params.id) }) }
   catch (e) { res.status(500).json({ error: String(e.message || e) }) }
 })
 
 app.get('/api/games/:id/diff', async (req, res) => {
-  try { res.json(await repos.diff(req.params.id, req.query.from, req.query.to)) }
+  try { res.json(await req.p.repos.diff(req.params.id, req.query.from, req.query.to)) }
   catch (e) { res.status(500).json({ error: String(e.message || e) }) }
 })
 
 app.get('/api/games/:id/bundle', async (req, res) => {
   try {
+    const { db, repos } = req.p
     const g = db.game(req.params.id)
     if (!g) return res.status(404).json({ error: 'not found' })
     const ref = req.query.v
@@ -159,6 +167,7 @@ app.get('/api/games/:id/bundle', async (req, res) => {
 })
 
 app.post('/api/games/:id/feedback', (req, res) => {
+  const { db } = req.p
   const g = db.game(req.params.id)
   if (!g) return res.status(404).json({ error: 'not found' })
   const { version, reports, summary, avg } = req.body
@@ -168,6 +177,7 @@ app.post('/api/games/:id/feedback', (req, res) => {
 })
 
 app.delete('/api/games/:id', (req, res) => {
+  const { db } = req.p
   const i = db.data.games.findIndex(g => g.id === req.params.id)
   if (i < 0) return res.status(404).json({ error: 'not found' })
   db.data.games.splice(i, 1); db.save()
@@ -175,21 +185,24 @@ app.delete('/api/games/:id', (req, res) => {
 })
 
 // ---------------- meetings & chats ----------------
-app.get('/api/meetings', (req, res) => res.json({ meetings: db.data.meetings.slice(-30) }))
+app.get('/api/meetings', (req, res) => res.json({ meetings: req.p.db.data.meetings.slice(-30) }))
 app.post('/api/meetings', (req, res) => {
+  const { db } = req.p
   const m = { id: 'm' + Date.now(), ...req.body, startedAt: new Date().toISOString() }
   db.data.meetings.push(m); db.save()
   res.json({ meeting: m })
 })
 app.patch('/api/meetings/:id', (req, res) => {
+  const { db } = req.p
   const m = db.data.meetings.find(x => x.id === req.params.id)
   if (!m) return res.status(404).json({ error: 'not found' })
   Object.assign(m, req.body); db.save()
   res.json({ meeting: m })
 })
 
-app.get('/api/chats/:agent', (req, res) => res.json({ history: db.data.chats[req.params.agent] || [] }))
+app.get('/api/chats/:agent', (req, res) => res.json({ history: req.p.db.data.chats[req.params.agent] || [] }))
 app.post('/api/chats/:agent', (req, res) => {
+  const { db } = req.p
   const h = db.data.chats[req.params.agent] = db.data.chats[req.params.agent] || []
   h.push(...(req.body?.messages || []))
   while (h.length > 200) h.shift()
@@ -199,7 +212,7 @@ app.post('/api/chats/:agent', (req, res) => {
 
 // ---------------- 공유 플레이어 ----------------
 app.get('/play/:id', (req, res) => {
-  const g = db.game(req.params.id)
+  const g = req.p.db.game(req.params.id)
   const title = g ? `${g.emoji} ${g.title} — DOTCADE` : 'DOTCADE'
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
   res.end(`<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -278,12 +291,14 @@ if (fs.existsSync(dist)) {
 const PORT = process.env.BACK_PORT || 5175
 async function boot() {
   await detectLLM()
-  const seeded = await seedDefaults().catch(e => { console.error('시드 실패:', e.message); return 0 })
+  ensureSeed() // 현재 데이터 → data/seed 스냅샷 (브라우저별 프로필의 초기 상태)
+  const seeded = await seedDefaults(seedCtx()).catch(e => { console.error('시드 실패:', e.message); return 0 })
   app.listen(PORT, () => {
     console.log(`\n🕹  DOTCADE 서버  http://localhost:${PORT}`)
     console.log(`   LLM 모드: ${llmState.mode}${llmState.lastError ? ' (' + llmState.lastError + ')' : ''}`)
     console.log(`   모델: smart=${models.smart()} fast=${models.fast()}`)
     console.log(`   웹서치: ${tavily.enabled() ? `Tavily 키 ${tavily.state().length}개 로테이션` : '비활성 (BACK_TAVILY_API_KEYS 미설정)'}`)
+    console.log(`   DB: 브라우저(쿠키)별 독립 프로필 — data/seed 복제`)
     if (seeded) console.log(`   기본 게임 ${seeded}종 시드 완료`)
   })
 }

@@ -1,17 +1,12 @@
-// DOTCADE — 게임팩당 실제 git 레포 관리 (init/commit/tag/show/diff)
+// DOTCADE — 게임팩당 실제 git 레포 관리 (init/commit/tag/show/diff) — 프로필별 games 디렉터리
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DATA_DIR } from './db.js'
-
-const GAMES_DIR = path.join(DATA_DIR, 'games')
-fs.mkdirSync(GAMES_DIR, { recursive: true })
 
 const sane = id => {
   if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id)) throw new Error('잘못된 게임 id: ' + id)
   return id
 }
-const dir = id => path.join(GAMES_DIR, sane(id))
 
 function git(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -29,73 +24,78 @@ function writeFiles(root, files) {
   }
 }
 
-export const repos = {
-  exists: id => fs.existsSync(path.join(dir(id), '.git')),
+export function makeRepos(gamesDir) {
+  fs.mkdirSync(gamesDir, { recursive: true })
+  const dir = id => path.join(gamesDir, sane(id))
 
-  async create(id, files, message, version = 'v1.0.0') {
-    const d = dir(id)
-    fs.mkdirSync(d, { recursive: true })
-    writeFiles(d, files)
-    await git(d, 'init', '-q', '-b', 'main')
-    await git(d, 'config', 'user.email', 'bot@dotcade.local')
-    await git(d, 'config', 'user.name', 'DOTCADE Bot')
-    await git(d, 'add', '-A')
-    await git(d, 'commit', '-q', '-m', message || `release ${version}`)
-    await git(d, 'tag', version)
-    return version
-  },
+  return {
+    exists: id => fs.existsSync(path.join(dir(id), '.git')),
 
-  async addVersion(id, files, message, version) {
-    const d = dir(id)
-    writeFiles(d, files)
-    await git(d, 'add', '-A')
-    await git(d, 'commit', '-q', '-m', message || `release ${version}`)
-    await git(d, 'tag', version)
-    return version
-  },
+    async create(id, files, message, version = 'v1.0.0') {
+      const d = dir(id)
+      fs.mkdirSync(d, { recursive: true })
+      writeFiles(d, files)
+      await git(d, 'init', '-q', '-b', 'main')
+      await git(d, 'config', 'user.email', 'bot@dotcade.local')
+      await git(d, 'config', 'user.name', 'DOTCADE Bot')
+      await git(d, 'add', '-A')
+      await git(d, 'commit', '-q', '-m', message || `release ${version}`)
+      await git(d, 'tag', version)
+      return version
+    },
 
-  async versions(id) {
-    const d = dir(id)
-    const out = await git(d, 'for-each-ref', 'refs/tags', '--sort=creatordate',
-      '--format=%(refname:short)%09%(creatordate:iso8601)%09%(subject)')
-    return out.trim().split('\n').filter(Boolean).map(l => {
-      const [v, date, ...m] = l.split('\t')
-      return { v, date, message: m.join('\t') }
-    })
-  },
+    async addVersion(id, files, message, version) {
+      const d = dir(id)
+      writeFiles(d, files)
+      await git(d, 'add', '-A')
+      await git(d, 'commit', '-q', '-m', message || `release ${version}`)
+      await git(d, 'tag', version)
+      return version
+    },
 
-  async log(id) {
-    const d = dir(id)
-    const out = await git(d, 'log', '--format=%h%x09%ad%x09%s', '--date=short')
-    return out.trim().split('\n').filter(Boolean).map(l => {
-      const [hash, date, ...m] = l.split('\t')
-      return { hash, date, message: m.join('\t') }
-    })
-  },
+    async versions(id) {
+      const d = dir(id)
+      const out = await git(d, 'for-each-ref', 'refs/tags', '--sort=creatordate',
+        '--format=%(refname:short)%09%(creatordate:iso8601)%09%(subject)')
+      return out.trim().split('\n').filter(Boolean).map(l => {
+        const [v, date, ...m] = l.split('\t')
+        return { v, date, message: m.join('\t') }
+      })
+    },
 
-  async filesAt(id, ref = 'HEAD') {
-    const d = dir(id)
-    const list = (await git(d, 'ls-tree', '-r', '--name-only', ref)).trim().split('\n').filter(Boolean)
-    const files = {}
-    for (const f of list) {
-      files[f] = await git(d, 'show', `${ref}:${f}`)
+    async log(id) {
+      const d = dir(id)
+      const out = await git(d, 'log', '--format=%h%x09%ad%x09%s', '--date=short')
+      return out.trim().split('\n').filter(Boolean).map(l => {
+        const [hash, date, ...m] = l.split('\t')
+        return { hash, date, message: m.join('\t') }
+      })
+    },
+
+    async filesAt(id, ref = 'HEAD') {
+      const d = dir(id)
+      const list = (await git(d, 'ls-tree', '-r', '--name-only', ref)).trim().split('\n').filter(Boolean)
+      const files = {}
+      for (const f of list) {
+        files[f] = await git(d, 'show', `${ref}:${f}`)
+      }
+      return files
+    },
+
+    async fileAt(id, ref, file) {
+      return git(dir(id), 'show', `${ref}:${file}`)
+    },
+
+    async diff(id, from, to) {
+      const d = dir(id)
+      const stat = await git(d, 'diff', '--stat', `${from}..${to}`)
+      const patch = await git(d, 'diff', `${from}..${to}`)
+      return { stat, patch: patch.slice(0, 200000) }
+    },
+
+    latestCode(id) {
+      const p = path.join(dir(id), 'game.js')
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null
     }
-    return files
-  },
-
-  async fileAt(id, ref, file) {
-    return git(dir(id), 'show', `${ref}:${file}`)
-  },
-
-  async diff(id, from, to) {
-    const d = dir(id)
-    const stat = await git(d, 'diff', '--stat', `${from}..${to}`)
-    const patch = await git(d, 'diff', `${from}..${to}`)
-    return { stat, patch: patch.slice(0, 200000) }
-  },
-
-  latestCode(id) {
-    const p = path.join(dir(id), 'game.js')
-    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null
   }
 }

@@ -30,6 +30,7 @@ export class Engine {
     this.simMode = false
     this.cabinetLabels = {}   // cabinetIdx -> {title, emoji, color, playerName}
     this.marquee = null       // 배포 중 게임 {title emoji color}
+    this._newPaks = new Map() // gameId -> {until, kind:'new'|'up'} 신규/업그레이드 게임팩 하이라이트
     this._raf = 0
     this._last = 0
     this._hintKey = ''
@@ -246,16 +247,28 @@ export class Engine {
     const p = this.player
     const ptx = Math.floor(p.x / T), pty = Math.floor(p.y / T)
     if (this.map === 'office') {
+      // 회의실 존 — 근처로 가면 E로 바로 회의 시작 (HUD '회의 시작' 버튼과 동일)
+      const mz = this.maps.office.meeting && this.maps.office.meeting.zone // [x, y, w, h]
+      if (mz && !this.meetingMode) {
+        const [zx, zy, zw, zh] = mz
+        if (ptx >= zx - 1 && ptx <= zx + zw && pty >= zy - 1 && pty <= zy + zh) {
+          hint = { type: 'meeting', label: '회의 시작 (안건 제출)' }
+        }
+      }
       let best = null, bd = 1e9
       for (const e of this.agents.values()) {
         if (!e.visible || e.id.startsWith('v') || (e.map && e.map !== this.map)) continue
         const d = Math.hypot(e.x - p.x, e.y - p.y)
         if (d < T * 1.5 && d < bd) { bd = d; best = e }
       }
-      if (best) hint = { type: 'agent', id: best.id, label: `${best.meta.shortName || best.label}와 대화` }
+      if (!hint && best) hint = { type: 'agent', id: best.id, label: `${best.meta.shortName || best.label}와 대화` }
       const sh = this.maps.office.shelf
-      if (!hint && sh.front.some(([x, y]) => Math.abs(x - ptx) <= 0 && Math.abs(y - pty) <= 0)) {
-        hint = { type: 'shelf', label: '게임팩 진열대 열기' }
+      if (!hint && sh) {
+        // 진열대 본체 사방 1타일(위·옆·아래 어디서 접근해도) + 기존 front 타일 주변
+        const [bx, by, bw, bh] = sh.tiles // [x, y, w, h]
+        const nearBody = ptx >= bx - 1 && ptx <= bx + bw && pty >= by - 1 && pty <= by + bh
+        const nearFront = (sh.front || []).some(([x, y]) => Math.abs(x - ptx) <= 1 && Math.abs(y - pty) <= 1)
+        if (nearBody || nearFront) hint = { type: 'shelf', label: '게임팩 진열대 열기' }
       }
       const door = this.maps.office.door
       if (!hint && door.approach.concat(door.tiles).some(([x, y]) => Math.abs(x - ptx) + Math.abs(y - pty) <= 1)) {
@@ -295,6 +308,7 @@ export class Engine {
     ents.push(this.player)
     ents.sort((a, b) => a.y - b.y)
     for (const e of ents) this._drawEnt(e)
+    if (this.map === 'office') this._drawShelfSign()
     for (const e of ents) if (e.bubble) this._drawBubble(e)
 
     // hint marker
@@ -422,15 +436,104 @@ export class Engine {
     const games = this._shelfGames || []
     const [tx, ty] = [sh.tiles[0], sh.tiles[1]]
     games.slice(0, 10).forEach((g, i) => {
-      const row = Math.floor(i / 5), col = i % 5
-      const x = tx * T + 12 + col * 34, y = ty * T + 14 + row * 44
+      const { x, y: y0, w, h } = this._pakXY(i)
+      const fresh = this._newPak(g)
+      const y = y0 + (fresh ? -Math.abs(Math.sin(this.t / 190)) * 5 : 0) // 새 팩은 통통 튐
+      // 그림자 + 본체 (크게, 또렷하게)
+      ctx.fillStyle = 'rgba(16,12,24,.35)'
+      ctx.fillRect(x + 2, y0 + 3, w, h)
+      if (fresh) {
+        ctx.save()
+        ctx.shadowColor = '#ffd24a'
+        ctx.shadowBlur = 14 + Math.sin(this.t / 140) * 7
+      }
       ctx.fillStyle = g.color || '#b78cff'
-      ctx.fillRect(x, y, 26, 22)
-      ctx.fillStyle = 'rgba(255,255,255,.85)'
-      ctx.fillRect(x + 4, y + 4, 18, 8)
-      ctx.font = '10px monospace'; ctx.fillStyle = '#1c2136'
-      ctx.fillText((g.emoji || '🎮'), x + 7, y + 12)
+      ctx.fillRect(x, y, w, h)
+      if (fresh) ctx.restore()
+      ctx.strokeStyle = fresh ? '#ffd24a' : 'rgba(20,22,40,.85)'; ctx.lineWidth = 2
+      ctx.strokeRect(x + 1, y + 1, w - 2, h - 2)
+      // 라벨 스티커 + 큰 이모지
+      ctx.fillStyle = 'rgba(255,255,255,.92)'
+      ctx.fillRect(x + 4, y + 4, w - 8, h - 16)
+      ctx.font = '16px monospace'; ctx.textAlign = 'center'
+      ctx.fillText((g.emoji || '🎮'), x + w / 2, y + 21)
+      ctx.textAlign = 'left'
+      // 카트리지 그립 라인
+      ctx.fillStyle = 'rgba(20,22,40,.5)'
+      ctx.fillRect(x + 6, y + h - 9, w - 12, 2)
+      ctx.fillRect(x + 6, y + h - 5, w - 12, 2)
     })
   }
-  setShelfGames(games) { this._shelfGames = games }
+
+  _drawShelfSign() {
+    const { ctx } = this
+    const sh = this.maps.office.shelf
+    const [tx, ty, tw] = [sh.tiles[0], sh.tiles[1], sh.tiles[2] || 4]
+    const games = this._shelfGames || []
+    const freshList = games.slice(0, 10).map((g, i) => ({ g, i, n: this._newPak(g) })).filter(e => e.n)
+    const hasNew = freshList.length > 0
+    const cx = tx * T + (tw * T) / 2
+    const pulse = hasNew ? 0.55 + 0.45 * Math.sin(this.t / 130) : 0.62 + 0.38 * Math.sin(this.t / 320)
+    ctx.font = 'bold 15px "Segoe UI", sans-serif'
+    const label = hasNew ? '✨ NEW 게임팩 입고!' : '🗄️ 게임팩'
+    const lw = tw * T - 4
+    ctx.fillStyle = '#14162a'
+    ctx.beginPath(); ctx.roundRect(cx - lw / 2, ty * T - 26, lw, 22, 6); ctx.fill()
+    ctx.strokeStyle = `rgba(255,210,74,${pulse.toFixed(3)})`; ctx.lineWidth = hasNew ? 3 : 2.5; ctx.stroke()
+    ctx.fillStyle = hasNew && this.t % 700 < 350 ? '#ffffff' : '#ffd24a'
+    ctx.textAlign = 'center'
+    ctx.fillText(label, cx, ty * T - 10)
+    ctx.textAlign = 'left'
+    // 새 게임팩: NEW/UP 배지 + 반짝이 (팩 위에 그려 어디서든 눈에 띄게)
+    for (const { i, n } of freshList) {
+      const { x, y, w } = this._pakXY(i)
+      const bw = n.kind === 'new' ? 34 : 26
+      const bx = x + w / 2 - bw / 2, by = y - 13
+      ctx.fillStyle = '#ff3d5e'
+      ctx.beginPath(); ctx.roundRect(bx, by, bw, 14, 4); ctx.fill()
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke()
+      ctx.font = 'bold 10px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'
+      ctx.fillText(n.kind === 'new' ? 'NEW!' : 'UP!', x + w / 2, by + 11)
+      ctx.textAlign = 'left'
+      // 반짝이 3개 궤도
+      for (let k = 0; k < 3; k++) {
+        const a = this.t / 260 + k * 2.094
+        const sx = x + w / 2 + Math.cos(a) * 27
+        const sy = y + 18 + Math.sin(a) * 22
+        const sp = 2.2 + Math.sin(this.t / 90 + k * 1.7) * 1.4
+        ctx.strokeStyle = `rgba(255,225,120,${(0.55 + 0.45 * Math.sin(this.t / 110 + k)).toFixed(3)})`
+        ctx.lineWidth = 1.6
+        ctx.beginPath()
+        ctx.moveTo(sx - sp, sy); ctx.lineTo(sx + sp, sy)
+        ctx.moveTo(sx, sy - sp); ctx.lineTo(sx, sy + sp)
+        ctx.stroke()
+      }
+    }
+  }
+  setShelfGames(games) {
+    const next = games || []
+    // 최초 로드가 아니면 새 게임/새 버전을 감지해 45초간 하이라이트
+    if (this._shelfGames) {
+      const prevIds = new Set(this._shelfGames.map(g => g.id))
+      const prevVer = new Map(this._shelfGames.map(g => [g.id, g.version]))
+      for (const g of next) {
+        if (!prevIds.has(g.id)) this._newPaks.set(g.id, { until: this.t + 45000, kind: 'new' })
+        else if (prevVer.get(g.id) !== g.version) this._newPaks.set(g.id, { until: this.t + 45000, kind: 'up' })
+      }
+    }
+    this._shelfGames = next
+  }
+
+  _pakXY(i) {
+    const sh = this.maps.office.shelf
+    const row = Math.floor(i / 5), col = i % 5
+    return { x: sh.tiles[0] * T + 6 + col * 37, y: sh.tiles[1] * T + 6 + row * 45, w: 33, h: 38 }
+  }
+
+  _newPak(g) {
+    const n = this._newPaks.get(g.id)
+    if (!n) return null
+    if (this.t > n.until) { this._newPaks.delete(g.id); return null }
+    return n
+  }
 }

@@ -3,6 +3,7 @@ import { useStore } from '../state/store.js'
 import { TEAM, PLAYER } from '../data/personas.js'
 import { PHASES } from '../meeting/prompts.js'
 import Markdown from './Markdown.jsx'
+import PhaseStepper from './PhaseStepper.jsx'
 
 const face = id => id === 'player'
   ? '/assets/sprites/player/face.png'
@@ -30,16 +31,10 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
       <div className="panel-head">
         <div style={{ flex: 1 }}>
           <b>📋 BMAD 회의</b> <span className="muted">{meeting.agenda}</span>
-          <div className="phase-strip">
-            {PHASES.map((p, i) => (
-              <span key={p.key} className={`phase-dot ${i < phaseIdx ? 'past' : i === phaseIdx ? 'now' : ''}`} title={`${p.label} — ${p.bmad}`}>
-                {p.label}
-              </span>
-            ))}
-          </div>
         </div>
         <button className="x" onClick={closePanel} title="접기 (회의는 계속 진행됩니다)">▁</button>
       </div>
+      <PhaseStepper phase={meeting.phase} status={meeting.status} />
 
       <div className="tabs">
         <button className={tab === 'feed' ? 'on' : ''} onClick={() => setTab('feed')}>회의록</button>

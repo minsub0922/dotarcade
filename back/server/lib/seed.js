@@ -1,9 +1,7 @@
-// DOTCADE — 기본 게임 3종 시드 (첫 부팅 시 git 레포 생성)
+// DOTCADE — 기본 게임 3종 시드 (seed 스냅샷에 git 레포 생성)
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { db } from './db.js'
-import { repos } from './repos.js'
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'games-src')
 
@@ -34,7 +32,7 @@ const DEFAULTS = [
   }
 ]
 
-export async function seedDefaults() {
+export async function seedDefaults({ db, repos }) {
   let seeded = 0
   for (const g of DEFAULTS) {
     if (db.game(g.id)) continue
@@ -58,6 +56,6 @@ export async function seedDefaults() {
     })
     seeded++
   }
-  if (seeded) db.save()
+  if (seeded) db.flush()
   return seeded
 }

@@ -54,7 +54,7 @@ export const TEAM = [
 ]
 
 export const PLAYER = {
-  id: 'player', name: '최민섭', role: '팀장', sprite: 'player', color: '#ffd24a', title: '스튜디오 팀장 (나)'
+  id: 'player', name: '나', role: '팀장', sprite: 'player', color: '#ffd24a', title: '스튜디오 팀장'
 }
 
 // ---------------- 오락실 손님 20인 ----------------
