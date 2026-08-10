@@ -39,6 +39,11 @@ export const api = {
     return final
   },
 
+  // Tavily 웹 검색 (서버가 키 로테이션 처리)
+  search: (query, maxResults = 5) => fetch('/api/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, maxResults })
+  }).then(J),
+
   ragUpsert: docs => fetch('/api/rag/upsert', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ docs })
   }).then(J).catch(() => ({})),

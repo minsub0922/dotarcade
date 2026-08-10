@@ -56,10 +56,11 @@ export const PHASES = [
 ]
 
 export const P = {
-  research: (agenda, ragNotes, isUpgrade, currentInfo) =>
+  research: (agenda, ragNotes, isUpgrade, currentInfo, webNotes) =>
     `팀장이 새 회의 안건을 냈습니다: "${agenda}"
 ${isUpgrade ? `이번 회의는 기존 게임의 업그레이드입니다.\n${currentInfo}` : '이번 회의는 신규 도트 미니게임 제작입니다.'}
 ${ragNotes ? `\n[과거 기록 검색 결과(RAG)]\n${ragNotes}` : ''}
+${webNotes ? `\n[웹 검색 결과(Tavily)]\n${webNotes}` : ''}
 당신의 페르소나 관점에서 이 안건에 대한 조사 메모를 작성하세요 (불릿 4~6개, 200자 내외).
 트렌드, 유사 사례, 과거 피드백 교훈, 그리고 당신이 밀고 싶은 방향 1가지를 포함하세요.`,
 

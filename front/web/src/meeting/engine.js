@@ -115,16 +115,29 @@ export class MeetingEngine {
         w.bubble(m.id, '🔍 조사 중...', 6000)
         const rq = await api.ragQuery(`${agenda} ${m.role} 관점`, 3)
         const ragNotes = (rq.results || []).map(r => `- (${r.kind}) ${r.text.slice(0, 160)}`).join('\n')
-        const useSearch = S().config.llm === 'live' && (m.id === 'writer' || m.id === 'pm' || m.id === 'designer')
+        // 웹 검색: Tavily 키 로테이션 (서버) — LLM mock 모드에서도 동작, 실패 시 Gemini grounding 폴백
+        const wantsSearch = m.id === 'writer' || m.id === 'pm' || m.id === 'designer'
+        let webNotes = '', webSources = []
+        if (wantsSearch && S().config.webSearch) {
+          try {
+            const sr = await api.search(`${agenda} 게임 트렌드 ${m.role}`.slice(0, 300), 4)
+            webSources = (sr.results || []).map(r => ({ title: r.title, uri: r.url }))
+            webNotes = (sr.answer ? `요약: ${sr.answer}\n` : '') +
+              (sr.results || []).map(r => `- ${r.title}: ${String(r.content || '').slice(0, 200)} (${r.url})`).join('\n')
+            w.bubble(m.id, '🌐 웹 검색 완료', 2500)
+          } catch { /* Tavily 전 키 소진/오류 → 아래 grounding 폴백 */ }
+        }
+        const useSearch = !webNotes && S().config.llm === 'live' && wantsSearch
         try {
           const out = await api.generate({
             system: personaSystem(m, S().games),
-            messages: [{ role: 'user', text: P.research(agenda, ragNotes, isUp, upgradeInfo) }],
+            messages: [{ role: 'user', text: P.research(agenda, ragNotes, isUp, upgradeInfo, webNotes) }],
             hint: 'research', model: 'fast', search: useSearch,
             personaMeta: { name: m.name }
           })
           notes[m.id] = out.text
-          this._say(m.id, 'note', out.text.slice(0, 600) + (out.sources?.length ? '\n' + out.sources.map(s => `🔗 ${s.title || s.uri}`).join('\n') : ''))
+          const allSources = [...webSources, ...(out.sources || [])].slice(0, 6)
+          this._say(m.id, 'note', out.text.slice(0, 600) + (allSources.length ? '\n' + allSources.map(s => `🔗 ${s.title || s.uri}`).join('\n') : ''))
           w.bubble(m.id, '조사 완료! ' + out.text.slice(0, 30), 3000)
         } catch (e) {
           notes[m.id] = ''
