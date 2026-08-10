@@ -13,6 +13,7 @@ npm start            # http://localhost:5175 (API 전용)
 ```
 
 - 루트 `.env`에 `GEMINI_API_KEY` 설정 (키가 없거나 오프라인이면 자동으로 **mock 모드** 전환 — 전체 기능 오프라인 데모 가능).
+- **웹 검색**: `.env`의 `TAVILY_API_KEYS`(쉼표로 여러 개) — 무료 키를 **로테이션**(라운드로빈 + 실패 시 다음 키 + 쿼터 초과 쿨다운 + 무효 키 자동 제외)으로 사용해 에이전트 리서치에 제공. `POST /api/search {query}`, 키 상태 `GET /api/search/state`, 전 키 점검 `GET /api/search/health`.
 - 포트: `.env`의 `PORT`(기본 5175). 프론트(:5173)가 `/api`·`/play`를 이쪽으로 프록시합니다.
 - 데이터 초기화: 서버 종료 후 `server/data/` 삭제 (기본 게임 3종은 재시드).
 - E2E: `tools/e2e/` (Playwright) — front(:5173)+back(:5175) 동시 구동 후 실행.

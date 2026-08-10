@@ -8,6 +8,7 @@ import { db } from './lib/db.js'
 import { repos } from './lib/repos.js'
 import { rag } from './lib/rag.js'
 import { provider, llmState, detectLLM, models } from './lib/gemini.js'
+import { tavily } from './lib/tavily.js'
 import { seedDefaults } from './lib/seed.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -21,7 +22,8 @@ app.get('/api/config', (req, res) => {
   res.json({
     llm: llmState.mode, llmError: llmState.lastError, workingModel: llmState.workingModel,
     models: { smart: models.smart(), fast: models.fast(), embed: models.embed() },
-    hasKey: !!process.env.GEMINI_API_KEY
+    hasKey: !!process.env.GEMINI_API_KEY,
+    webSearch: tavily.enabled()
   })
 })
 app.post('/api/config/redetect', async (req, res) => res.json(await detectLLM()))
@@ -54,6 +56,21 @@ app.post('/api/llm/embed', async (req, res) => {
     res.json({ vectors: await provider().embed(req.body?.texts || []) })
   } catch (e) { res.status(502).json({ error: String(e.message || e) }) }
 })
+
+// ---------------- web search (Tavily 키 로테이션) ----------------
+app.post('/api/search', async (req, res) => {
+  try {
+    const { query, maxResults } = req.body || {}
+    if (!query || !String(query).trim()) return res.status(400).json({ error: 'query 필요' })
+    if (!tavily.enabled()) return res.status(503).json({ error: 'TAVILY_API_KEYS 미설정' })
+    res.json(await tavily.search(String(query), { maxResults: maxResults || 5 }))
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }) }
+})
+app.get('/api/search/health', async (req, res) => {
+  if (!tavily.enabled()) return res.status(503).json({ error: 'TAVILY_API_KEYS 미설정' })
+  res.json({ keys: await tavily.health() })
+})
+app.get('/api/search/state', (req, res) => res.json({ enabled: tavily.enabled(), state: tavily.state() }))
 
 // ---------------- RAG ----------------
 app.post('/api/rag/upsert', async (req, res) => {
@@ -266,6 +283,7 @@ async function boot() {
     console.log(`\n🕹  DOTCADE 서버  http://localhost:${PORT}`)
     console.log(`   LLM 모드: ${llmState.mode}${llmState.lastError ? ' (' + llmState.lastError + ')' : ''}`)
     console.log(`   모델: smart=${models.smart()} fast=${models.fast()}`)
+    console.log(`   웹서치: ${tavily.enabled() ? `Tavily 키 ${tavily.state().length}개 로테이션` : '비활성 (TAVILY_API_KEYS 미설정)'}`)
     if (seeded) console.log(`   기본 게임 ${seeded}종 시드 완료`)
   })
 }
