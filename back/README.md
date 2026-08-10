@@ -3,7 +3,7 @@
 > **게임 스튜디오 운영 + 오락실 배포 시뮬레이션** — LLM 멀티에이전트 팀이 BMAD 방식 회의로 *실제로 동작하는* 도트 미니게임을 만들고, 오락실에 배포해 20명의 가상 손님에게 평가받는 앱의 **백엔드**입니다.
 
 이 레포는 **백엔드**(Express, 의존성은 `express`+`dotenv` 단 2개)입니다.
-프론트 레포: [dotarcade_front](https://github.com/minsub0922/dotarcade_front) (Vite + React — `:5173`)
+프론트: [`../front`](../front/) (Vite + React — `:5173`)
 
 ## 담당 영역
 
