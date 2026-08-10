@@ -22,7 +22,7 @@ npm start            # 배포 모드: serve.js — web/dist 서빙 + /api·/play
 
 - **백엔드가 먼저 떠 있어야** API·공유 플레이(`/play/<게임id>`)가 동작합니다. `back/`에서 `npm start` (`:5175`).
 - 배포 서버(`serve.js`)는 Node 내장 모듈만 사용하므로 `node_modules` 없이도 동작합니다 (단, 빌드된 `web/dist` 필요).
-- 환경변수: `FRONT_PORT`(기본 `5173`), `BACK_ORIGIN`(기본 `http://localhost:5175`).
+- 환경변수: **레포 루트의 단일 `.env`** 사용 — 프론트는 `FRONT_*` 접두사 키만 읽습니다 (백엔드는 `BACK_*`). `FRONT_PORT`(기본 `5173`), `FRONT_BACK_ORIGIN`(프록시 대상 백엔드 주소, 기본 `http://localhost:5175`).
 
 ## 🧩 주요 시스템
 

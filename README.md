@@ -25,5 +25,6 @@ cd back && npm install && npm start
 cd front && npm install && npm run dev
 ```
 
-- `back/.env`에 `GEMINI_API_KEY`를 설정하세요. **키가 없으면 자동 mock 모드**로 전환되어 오프라인 데모가 가능합니다.
+- 환경변수는 **레포 루트의 단일 `.env`** 하나로 관리합니다: `cp .env.example .env` 후 `BACK_GEMINI_API_KEY`를 채우세요. **키가 없으면 자동 mock 모드**로 전환되어 오프라인 데모가 가능합니다.
+- 키 이름은 소유 앱별 접두사로 구분됩니다 — `BACK_*`은 back만, `FRONT_*`은 front만 읽으며 서로 겹치지 않습니다.
 - 자세한 실행·환경변수·API 문서는 각 폴더의 README를 참고: [front/README.md](front/README.md) · [back/README.md](back/README.md)

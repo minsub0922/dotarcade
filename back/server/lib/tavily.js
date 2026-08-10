@@ -1,7 +1,7 @@
 // DOTCADE — Tavily 웹서치 클라이언트 (무료 키 로테이션)
 // 라운드로빈 부하 분산 + 실패 시 다음 키로 자동 전환 + 쿼터 초과 쿨다운 + 무효 키 영구 비활성
 const parseKeys = () =>
-  (process.env.TAVILY_API_KEYS || process.env.TAVILY_API_KEY || '')
+  (process.env.BACK_TAVILY_API_KEYS || process.env.BACK_TAVILY_API_KEY || '')
     .split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
 
 let ring = null   // [{ key, ok, fails, dead, cooldownUntil, lastError }]
@@ -70,7 +70,7 @@ export const tavily = {
   // 로테이션 검색: 살아있는 키부터 라운드로빈, 실패하면 즉시 다음 키로
   async search(query, opts = {}) {
     const R = ensureRing()
-    if (!R.length) throw new Error('TAVILY_API_KEYS 미설정')
+    if (!R.length) throw new Error('BACK_TAVILY_API_KEYS 미설정')
     let lastErr
     for (let hop = 0; hop < R.length; hop++) {
       const entry = R[(cursor + hop) % R.length]

@@ -1,5 +1,5 @@
 // DOTCADE 프론트 배포 서버 — web/dist 정적 서빙 + /api·/play → 백엔드 프록시
-// 외부 의존성 없음(Node 내장 모듈만 사용). 포트: FRONT_PORT(기본 5173), 백엔드: BACK_ORIGIN(기본 http://localhost:5175)
+// 외부 의존성 없음(Node 내장 모듈만 사용). 레포 루트 .env 사용 — FRONT_PORT(기본 5173), FRONT_BACK_ORIGIN(기본 http://localhost:5175)
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -7,8 +7,18 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(ROOT, 'web', 'dist')
+
+// 레포 루트의 단일 .env 로드 (이미 설정된 환경변수가 우선)
+try {
+  const env = fs.readFileSync(path.join(ROOT, '..', '.env'), 'utf8')
+  for (const line of env.split('\n')) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/)
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
+  }
+} catch {}
+
 const PORT = Number(process.env.FRONT_PORT || 5173)
-const BACK = new URL(process.env.BACK_ORIGIN || 'http://localhost:5175')
+const BACK = new URL(process.env.FRONT_BACK_ORIGIN || 'http://localhost:5175')
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',

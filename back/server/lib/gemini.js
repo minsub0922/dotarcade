@@ -2,7 +2,7 @@
 import { mockProvider } from './mock.js'
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta'
-const KEY = () => process.env.GEMINI_API_KEY || ''
+const KEY = () => process.env.BACK_GEMINI_API_KEY || ''
 
 const FALLBACKS = [
   'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite',
@@ -11,13 +11,13 @@ const FALLBACKS = [
 const EMBED_FALLBACKS = ['gemini-embedding-2', 'gemini-embedding-001', 'text-embedding-004']
 
 export const models = {
-  smart: () => process.env.GEMINI_MODEL_SMART || 'gemini-3.6-flash',
-  fast: () => process.env.GEMINI_MODEL_FAST || 'gemini-3.5-flash-lite',
-  embed: () => process.env.GEMINI_MODEL_EMBED || 'gemini-embedding-2'
+  smart: () => process.env.BACK_GEMINI_MODEL_SMART || 'gemini-3.6-flash',
+  fast: () => process.env.BACK_GEMINI_MODEL_FAST || 'gemini-3.5-flash-lite',
+  embed: () => process.env.BACK_GEMINI_MODEL_EMBED || 'gemini-embedding-2'
 }
 
 // ---------- semaphore ----------
-const MAX = () => Math.max(1, parseInt(process.env.MAX_LLM_CONCURRENCY || '4', 10))
+const MAX = () => Math.max(1, parseInt(process.env.BACK_MAX_LLM_CONCURRENCY || '4', 10))
 let running = 0; const queue = []
 async function withSlot(fn) {
   if (running >= MAX()) await new Promise(r => queue.push(r))
@@ -29,9 +29,9 @@ async function withSlot(fn) {
 export const llmState = { mode: 'unknown', lastError: null, workingModel: null }
 
 export async function detectLLM() {
-  const forced = (process.env.LLM_MODE || 'auto').toLowerCase()
+  const forced = (process.env.BACK_LLM_MODE || 'auto').toLowerCase()
   if (forced === 'mock') { llmState.mode = 'mock'; return llmState }
-  if (!KEY()) { llmState.mode = 'mock'; llmState.lastError = 'GEMINI_API_KEY 없음'; return llmState }
+  if (!KEY()) { llmState.mode = 'mock'; llmState.lastError = 'BACK_GEMINI_API_KEY 없음'; return llmState }
   try {
     const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000)
     const r = await fetch(`${BASE}/models?key=${KEY()}&pageSize=1`, { signal: ctl.signal })

@@ -25,18 +25,20 @@ npm run dev          # --watch 모드
 
 프론트(`:5173`)가 `/api`·`/play`를 이쪽으로 프록시합니다. 프론트를 빌드해 두면(`web/dist`) 백엔드 단독으로도 정적 서빙합니다.
 
-### 환경변수 (루트 `.env`)
+### 환경변수 (레포 루트의 단일 `.env` — `cp .env.example .env`)
+
+백엔드는 `BACK_*` 접두사 키만 읽습니다 (프론트는 `FRONT_*` — 서로 겹치지 않음).
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `GEMINI_API_KEY` | — | 없으면 자동 mock 모드 (오프라인 데모) |
-| `GEMINI_MODEL_SMART` | — | 구현·아키텍처 등 고품질 단계용 모델 |
-| `GEMINI_MODEL_FAST` | — | 발화·피드백 등 경량 단계용 모델 |
-| `GEMINI_MODEL_EMBED` | — | RAG 임베딩 모델 |
-| `MAX_LLM_CONCURRENCY` | — | LLM 동시 호출 세마포어 크기 |
-| `LLM_MODE` | 자동 감지 | `mock` 강제 지정 가능 |
-| `TAVILY_API_KEYS` | — | 쉼표 구분 여러 개 — 로테이션 사용 |
-| `PORT` | `5175` | 서버 포트 |
+| `BACK_PORT` | `5175` | API 서버 포트 |
+| `BACK_GEMINI_API_KEY` | — | 없으면 자동 mock 모드 (오프라인 데모) |
+| `BACK_GEMINI_MODEL_SMART` | `gemini-3.6-flash` | 구현·아키텍처 등 고품질 단계용 모델 |
+| `BACK_GEMINI_MODEL_FAST` | `gemini-3.5-flash-lite` | 발화·피드백 등 경량 단계용 모델 |
+| `BACK_GEMINI_MODEL_EMBED` | `gemini-embedding-2` | RAG 임베딩 모델 |
+| `BACK_MAX_LLM_CONCURRENCY` | `4` | LLM 동시 호출 세마포어 크기 |
+| `BACK_LLM_MODE` | `auto` | `live`·`mock` 강제 지정 가능 |
+| `BACK_TAVILY_API_KEYS` | — | 쉼표 구분 여러 개 — 로테이션 사용 |
 
 - **데이터 초기화**: 서버 종료 후 `server/data/` 삭제 → 재구동 시 기본 게임 3종 재시드.
 - **E2E**: `tools/e2e/` (Playwright) — front(`:5173`) + back(`:5175`) 동시 구동 후 실행.
