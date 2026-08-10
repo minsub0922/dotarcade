@@ -1,11 +1,15 @@
 # DOTCADE 배포 가이드
 
-## 구성 요약
+## 현재 배포 상태 (2026-08-10)
 
-| 구성 | 위치 | 배포처 |
-|------|------|--------|
-| 프론트 (Vite + React SPA) | `front/` | **Vercel** — 정적 빌드 + `/api`·`/play` 리라이트 프록시 |
-| 백엔드 (Express) | `back/` | **상시 실행 호스트** (Render / Fly.io / Railway 등) |
+| 구성 | 위치 | 배포처 | URL |
+|------|------|--------|-----|
+| 프론트 (Vite + React SPA) | `front/` | **Vercel** (프로젝트 `dotarcade`) | https://dotarcade-dun.vercel.app |
+| 백엔드 (Express, Docker) | `back/` | **Railway** (프로젝트 `dotarcade-back`) | https://dotarcade-back-production.up.railway.app |
+
+- Vercel은 GitHub 연동 완료 — `main` push 시 프론트 자동 배포
+- Railway는 CLI 배포 — 백엔드 변경 시 `cd back && npx -y @railway/cli up --service dotarcade-back --detach`
+- 프론트 `/api`·`/play` → Railway 백엔드로 서버사이드 리라이트 (`front/vercel.json`) — 쿠키·SSE 통과 확인됨
 
 백엔드는 Vercel 서버리스에 올릴 수 없다. 이유:
 
@@ -39,13 +43,14 @@ vercel git connect                 # GitHub 레포 연결 → push 시 자동 �
 - Git 연결 후: `main` push → 프로덕션, 다른 브랜치 push → 프리뷰 자동 배포
 - 수동: `cd front && vercel` (프리뷰) / `vercel --prod` (프로덕션)
 
-## 2. 백엔드 — 상시 실행 호스트
+## 2. 백엔드 — Railway (Docker)
 
-요구 사항: Node 20+, `git` 바이너리, 영구(또는 최소한 재시작 전까지 유지되는) 디스크.
+요구 사항: Node 20+, `git` 바이너리, 재시작 전까지 유지되는 디스크 → `back/Dockerfile`(node:20-alpine + git)로 충족.
 
-- **시작 명령**: `cd back && npm install && npm start` (`node server/index.js`, 포트 `BACK_PORT` 기본 5175)
-- **환경변수**: 루트 `.env`의 `BACK_*` 키를 호스트 환경변수로 등록 — `BACK_GEMINI_API_KEY`, `BACK_TAVILY_API_KEYS`, `BACK_PORT` 등 (코드가 `process.env` 우선이라 `.env` 파일 없이도 동작)
-- Render/Railway는 저장소 루트가 레포 루트이므로 **Root Directory를 `back`으로** 지정
+- **배포**: `cd back && npx -y @railway/cli up --service dotarcade-back --detach`
+- **환경변수**: 루트 `.env`의 `BACK_*` 키가 Railway 서비스 변수로 등록되어 있음 (`BACK_PORT=8080`으로 오버라이드, 도메인이 8080 포트로 연결됨). 키 변경 시: `npx -y @railway/cli variables --set "KEY=VALUE" --service dotarcade-back`
+- **주의**: 재배포/재시작 시 브라우저별 프로필 데이터(`data/profiles`)가 초기화됨 — 부팅 시 기본 게임은 자동 시드
+- `render.yaml`은 Render로 옮길 경우를 위한 대안 블루프린트로 남겨둠
 
 ## 3. 로컬 개발 (변경 없음)
 
