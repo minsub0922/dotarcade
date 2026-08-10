@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "npm install",
+  "buildCommand": "npm run build",
+  "outputDirectory": "web/dist",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://REPLACE-WITH-BACKEND-ORIGIN/api/:path*" },
+    { "source": "/play/:path*", "destination": "https://REPLACE-WITH-BACKEND-ORIGIN/play/:path*" },
+    { "source": "/:path((?!api|play).*)", "destination": "/index.html" }
+  ]
+}
