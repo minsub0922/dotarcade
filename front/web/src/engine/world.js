@@ -21,8 +21,9 @@ import {
 } from './handheldVisuals.js'
 import { NpcReactionSystem } from './npcReactions.js'
 import {
-  AVATAR_FRAME, DISMOUNT_DURATION, createWalkState, directionFromDelta, rideDirectionFromDelta, rideLayout,
-  rideTransitionPose, sampleRideCycle, sampleWalkFrame, sheetSource
+  AVATAR_FRAME, DISMOUNT_DURATION, avatarDrawLayout, createWalkState, directionFromDelta,
+  isWalkSheetCompatible, rideDirectionFromDelta, rideLayout, rideTransitionPose, sampleRideCycle,
+  sampleWalkFrame, sheetSource
 } from './avatarAnimation.js'
 import { AvatarEmotionSystem } from './avatarEmotions.js'
 import {
@@ -2430,7 +2431,10 @@ export class Engine {
     const rideKind = mounted?.kind || rideMotion?.kind || null
     const dismounting = !mounted && rideMotion?.phase === 'dismount' && ridePose.active && !!rideKind
     const walkFrame = e.walkAnimation?.frame || 'idle'
-    const useWalkSheet = !!(walkSheet && e.moving && !e.sitting && !mounted && !this.reduceMotion)
+    // Only canonical 3x4 sheets are safe to slice. A malformed/partial sheet
+    // falls back to the audited directional still instead of leaking an
+    // adjacent action into the walking avatar.
+    const useWalkSheet = !!(isWalkSheetCompatible(walkSheet) && e.moving && !e.sitting && !mounted && !this.reduceMotion)
     const useMotionSheet = useWalkSheet
     const source = useMotionSheet ? sheetSource(e.dir, walkFrame) : null
     const sourceW = source?.width || img?.width
@@ -2438,23 +2442,20 @@ export class Engine {
     const visual = e.sitting ? AVATAR_VISUAL.seated : (isPlayer ? AVATAR_VISUAL.player : AVATAR_VISUAL.npc)
     const targetH = visual.height
     const targetW = visual.width
-    const scale = sourceW && sourceH ? Math.min(targetH / sourceH, targetW / sourceW) : 1
-    const drawW = sourceW ? Math.max(1, Math.round(sourceW * scale)) : 28
-    const drawH = sourceH ? Math.max(1, Math.round(sourceH * scale)) : 48
+    const frameLayout = avatarDrawLayout({
+      sourceWidth: sourceW,
+      sourceHeight: sourceH,
+      targetWidth: targetW,
+      targetHeight: targetH
+    })
+    const { drawW, drawH } = frameLayout
     const frameStride = walkFrame === 'stepL' ? -1 : walkFrame === 'stepR' ? 1 : 0
     const fallbackStride = !mounted && !this.reduceMotion && e.moving ? Math.sin(this.t / 62 + e.x * .015) : 0
     const stride = mounted ? 0 : (useMotionSheet ? frameStride : fallbackStride)
-    // The new contact frames carry the gait. Keep only a tiny pass-pose lift;
-    // the previous 3px sine bob made every avatar look like it was skating.
-    const bob = this.reduceMotion
-      ? 0
-      : mounted
-        ? 0
-        : useMotionSheet
-        ? (walkFrame === 'idle' ? -0.65 : 0)
-        : e.moving
-          ? Math.abs(stride) * -2
-          : (e.sitting ? 0 : Math.sin(this.t / 520 + e.x) * .7)
+    // The authored contact anchor already carries the gait. Vertical sine/bob
+    // offsets lift that anchor away from the shadow and make both walking and
+    // idle avatars appear to hover, so standing poses remain ground-locked.
+    const bob = 0
     const stepX = !useMotionSheet && e.moving && (e.dir === 'up' || e.dir === 'down') ? stride * .65 : 0
     const isTarget = this.interactionTarget?.type === 'agent' && this.interactionTarget.id === e.id
     const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 145) * 1.6
@@ -2516,10 +2517,10 @@ export class Engine {
         ctx.drawImage(
           walkSheet,
           source.x, source.y, AVATAR_FRAME.width, AVATAR_FRAME.height,
-          Math.round(-drawW / 2), Math.round(-drawH + 4 + bob - ridingLift), drawW, drawH
+          frameLayout.offsetX, frameLayout.offsetY + bob - ridingLift, drawW, drawH
         )
       } else {
-        ctx.drawImage(img, Math.round(-drawW / 2 + stepX), Math.round(-drawH + 4 + bob - ridingLift), drawW, drawH)
+        ctx.drawImage(img, frameLayout.offsetX + Math.round(stepX), frameLayout.offsetY + bob - ridingLift, drawW, drawH)
       }
       ctx.restore()
     } else {
@@ -2529,7 +2530,10 @@ export class Engine {
     if (!mounted) {
       drawAgentHandheld(ctx, e, {
         drawW,
-        drawH,
+        // Overlay actions share the same ground-contact origin. Excluding the
+        // transparent rows below the foot anchor keeps handhelds and reaction
+        // graphics attached to the visible body instead of the PNG bounds.
+        drawH: frameLayout.anchorY,
         bob,
         time: this.t,
         reduceMotion: this.reduceMotion,
@@ -2539,7 +2543,7 @@ export class Engine {
     if (held) this._drawWorldObject(held)
     e._renderOverlay = {
       drawW: mountedAvatar?.drawW || drawW,
-      drawH: mountedAvatar?.drawH || drawH + ridingLift,
+      drawH: mountedAvatar?.drawH || frameLayout.anchorY + ridingLift,
       bob: mountedCycle?.bob || bob
     }
   }

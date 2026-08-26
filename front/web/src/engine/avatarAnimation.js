@@ -2,6 +2,12 @@ const ROW_BY_DIRECTION = Object.freeze({ down: 0, left: 1, right: 2, up: 3 })
 const COLUMN_BY_FRAME = Object.freeze({ idle: 0, stepL: 1, stepR: 2 })
 
 export const AVATAR_FRAME = Object.freeze({ width: 48, height: 72 })
+// Every standing sprite is authored around this ground contact. The six rows
+// below the anchor are transparent breathing room, not part of the avatar's
+// height. Canvas drawing must therefore align this point (rather than the
+// bottom edge of the PNG) with the entity's world-space y coordinate.
+export const AVATAR_ANCHOR = Object.freeze({ x: 24, y: 66 })
+export const AVATAR_SHEET = Object.freeze({ columns: 3, rows: 4, width: 144, height: 288 })
 export const WALK_SEQUENCE = Object.freeze(['idle', 'stepL', 'idle', 'stepR'])
 export const MOUNT_DURATION = 360
 export const DISMOUNT_DURATION = 420
@@ -72,6 +78,45 @@ export function sheetSource(direction = 'down', frame = 'idle') {
     y: row * AVATAR_FRAME.height,
     width: AVATAR_FRAME.width,
     height: AVATAR_FRAME.height
+  }
+}
+
+const positiveNumber = (value, fallback) => Number.isFinite(Number(value)) && Number(value) > 0
+  ? Number(value)
+  : fallback
+
+// Reject an incomplete or differently packed sheet before slicing it. Without
+// this guard drawImage can expose a neighbouring pose (or a partially clipped
+// frame) while the corresponding directional still is perfectly usable.
+export function isWalkSheetCompatible(image) {
+  const width = positiveNumber(image?.naturalWidth, positiveNumber(image?.width, 0))
+  const height = positiveNumber(image?.naturalHeight, positiveNumber(image?.height, 0))
+  return width === AVATAR_SHEET.width && height === AVATAR_SHEET.height
+}
+
+export function avatarDrawLayout({
+  sourceWidth = AVATAR_FRAME.width,
+  sourceHeight = AVATAR_FRAME.height,
+  targetWidth = AVATAR_FRAME.width,
+  targetHeight = AVATAR_FRAME.height
+} = {}) {
+  const sw = positiveNumber(sourceWidth, AVATAR_FRAME.width)
+  const sh = positiveNumber(sourceHeight, AVATAR_FRAME.height)
+  const tw = positiveNumber(targetWidth, AVATAR_FRAME.width)
+  const th = positiveNumber(targetHeight, AVATAR_FRAME.height)
+  const scale = Math.min(th / sh, tw / sw)
+  const drawW = Math.max(1, Math.round(sw * scale))
+  const drawH = Math.max(1, Math.round(sh * scale))
+  const anchorX = Math.round(drawW * AVATAR_ANCHOR.x / AVATAR_FRAME.width)
+  const anchorY = Math.round(drawH * AVATAR_ANCHOR.y / AVATAR_FRAME.height)
+  return {
+    scale,
+    drawW,
+    drawH,
+    anchorX,
+    anchorY,
+    offsetX: -anchorX,
+    offsetY: -anchorY
   }
 }
 

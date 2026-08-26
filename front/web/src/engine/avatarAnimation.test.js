@@ -1,11 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  AVATAR_ANCHOR,
   WALK_SEQUENCE,
   DISMOUNT_DURATION,
   MOUNT_DURATION,
+  avatarDrawLayout,
   createWalkState,
   directionFromDelta,
+  isWalkSheetCompatible,
   rideDirectionFromDelta,
   rideLayout,
   rideTransitionPose,
@@ -91,6 +94,36 @@ test('sheet cells use canonical down-left-right-up rows', () => {
   assert.deepEqual(sheetSource('left', 'stepL'), { x: 48, y: 72, width: 48, height: 72 })
   assert.deepEqual(sheetSource('right', 'stepR'), { x: 96, y: 144, width: 48, height: 72 })
   assert.deepEqual(sheetSource('up', 'idle'), { x: 0, y: 216, width: 48, height: 72 })
+})
+
+test('standing sprite layout locks the authored foot anchor to world y', () => {
+  const player = avatarDrawLayout({
+    sourceWidth: 48,
+    sourceHeight: 72,
+    targetWidth: 54,
+    targetHeight: 82
+  })
+  assert.deepEqual([player.drawW, player.drawH], [54, 81])
+  assert.equal(player.offsetX + player.anchorX, 0)
+  assert.equal(player.offsetY + player.anchorY, 0)
+  assert.equal(player.anchorY, Math.round(player.drawH * AVATAR_ANCHOR.y / 72))
+
+  const npc = avatarDrawLayout({
+    sourceWidth: 48,
+    sourceHeight: 72,
+    targetWidth: 52,
+    targetHeight: 79
+  })
+  assert.deepEqual([npc.drawW, npc.drawH], [52, 78])
+  assert.equal(npc.offsetY + npc.anchorY, 0)
+})
+
+test('walking renderer accepts only the canonical sheet packing', () => {
+  assert.equal(isWalkSheetCompatible({ width: 144, height: 288 }), true)
+  assert.equal(isWalkSheetCompatible({ naturalWidth: 144, naturalHeight: 288, width: 1, height: 1 }), true)
+  assert.equal(isWalkSheetCompatible({ width: 144, height: 216 }), false)
+  assert.equal(isWalkSheetCompatible({ width: 192, height: 288 }), false)
+  assert.equal(isWalkSheetCompatible(null), false)
 })
 
 test('mount and dismount transitions remain bounded around the foot anchor', () => {
