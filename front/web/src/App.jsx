@@ -18,12 +18,21 @@ import Help from './ui/Help.jsx'
 import Toasts from './ui/Toasts.jsx'
 import ReportModal from './ui/ReportModal.jsx'
 import MilestoneConfirm from './ui/MilestoneConfirm.jsx'
+import AvatarProfile from './ui/AvatarProfile.jsx'
 import { PHASES } from './meeting/prompts.js'
-import { isMeetingActive, meetingStatusCopy } from './meeting/status.js'
+import { isMeetingActive, isMeetingPaused, meetingStatusCopy } from './meeting/status.js'
 import { PHASE_ICONS } from './ui/PhaseStepper.jsx'
 import { getMilestoneConflict, MILESTONE_ACTION } from './ui/milestone.js'
 
 const TRAVEL_CANCELLED = 'milestone-travel-cancelled'
+const TASK_ACTIVITY_KEY = 'dotcade-studio-task-activity'
+
+const readTaskActivity = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem(TASK_ACTIVITY_KEY) || '{}')
+    return value && typeof value === 'object' ? value : {}
+  } catch { return {} }
+}
 
 const abortablePause = (ms, signal) => new Promise((resolve, reject) => {
   if (signal.aborted) return reject(new Error(TRAVEL_CANCELLED))
@@ -98,6 +107,8 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [milestoneFlow, setMilestoneFlow] = useState(null)
+  const [taskActivity, setTaskActivity] = useState(readTaskActivity)
+  const [avatarProfileId, setAvatarProfileId] = useState(null)
   const journeyRef = useRef(null)
   const { panel, panelData, map, hint } = useStore()
 
@@ -127,6 +138,7 @@ export default function App() {
         onHint: h => useStore.getState().setHint(h),
         onInteract: event => {
           if (event?.type === 'handheld' || event?.type === 'portable') interact(event)
+          if (event?.type === 'propHit' || event?.type === 'vehicleHit') markTaskActivity('socialized')
         }
       })
       // 타일 상수 공유
@@ -243,6 +255,22 @@ export default function App() {
   }, [])
 
   // ---------- 상호작용 ----------
+  function markTaskActivity(key) {
+    if (!key) return
+    setTaskActivity(previous => {
+      if (previous[key]) return previous
+      const next = { ...previous, [key]: Date.now() }
+      try { localStorage.setItem(TASK_ACTIVITY_KEY, JSON.stringify(next)) } catch { /* storage unavailable */ }
+      return next
+    })
+  }
+
+  function openGame(gameId, options = {}) {
+    if (!gameId) return
+    markTaskActivity('playedGame')
+    useStore.getState().openPanel('play', { gameId, ...options })
+  }
+
   function interact(h) {
     const st = useStore.getState()
     const eng = engRef.current
@@ -255,6 +283,7 @@ export default function App() {
     if (h.type === 'agent') {
       const e = eng.agent(h.id)
       if (e) { e.meta.chatting = true; e.path = []; e.dir = eng.player.x < e.x ? 'left' : 'right' }
+      markTaskActivity('socialized')
       st.openPanel('chat', { agentId: h.id })
     } else if (h.type === 'shelf') {
       st.openPanel('library')
@@ -267,7 +296,7 @@ export default function App() {
       switchMap()
     } else if (h.type === 'cabinet') {
       const g = st.games.find(x => x.title === eng.cabinetLabels[h.id]?.title) || st.games[0]
-      if (g) st.openPanel('play', { gameId: g.id })
+      if (g) openGame(g.id)
     }
   }
 
@@ -421,9 +450,47 @@ export default function App() {
       const arcadeObserverTile = [5, 6]
 
       switch (objective.action) {
+        case MILESTONE_ACTION.TEAM_INTERACTION: {
+          const members = TEAM.map(member => ({ member, entity: eng.agent(member.id) })).filter(item => item.entity)
+          const nearest = members.sort((a, b) => {
+            const da = Math.hypot(a.entity.x - eng.player.x, a.entity.y - eng.player.y)
+            const db = Math.hypot(b.entity.x - eng.player.x, b.entity.y - eng.player.y)
+            return da - db
+          })[0]
+          if (!nearest) throw new Error('대화할 팀원을 찾지 못했습니다.')
+          const tx = Math.floor(nearest.entity.x / 48)
+          const ty = Math.floor(nearest.entity.y / 48)
+          const approach = [[tx - 1, ty], [tx + 1, ty], [tx, ty + 1], [tx, ty - 1]]
+            .find(([x, y]) => eng.maps.office.collision[y]?.[x] === '.') || [tx, ty]
+          await travelTo('office', approach, `${nearest.member.name} 자리`, controller.signal)
+          interact({ type: 'agent', id: nearest.member.id })
+          useStore.getState().toast('💬 대화를 나누거나, 주변 책을 집어 F로 던져 반응을 확인해 보세요.')
+          break
+        }
+        case MILESTONE_ACTION.PLAY_GAME: {
+          const currentMap = useStore.getState().map
+          const targetMap = currentMap === 'arcade' ? 'arcade' : 'office'
+          const gameSpot = targetMap === 'arcade'
+            ? arcadeObserverTile
+            : (eng.maps.office.shelf?.front?.[1] || [3, 15])
+          await travelTo(targetMap, gameSpot, targetMap === 'arcade' ? '게임 캐비닛' : '게임팩 진열대', controller.signal)
+          useStore.getState().openPanel('library', targetMap === 'office' ? null : { source: 'arcade-task' })
+          break
+        }
         case MILESTONE_ACTION.RESUME_MEETING:
           st.openPanel('meeting')
           break
+        case MILESTONE_ACTION.INTERRUPT_MEETING: {
+          updateJourneyLabel('회의 컨텍스트를 안전하게 저장하는 중…')
+          st.openPanel('meeting')
+          const pause = meetRef.current?.pause
+          if (typeof pause !== 'function') throw new Error('현재 회의는 일시정지를 지원하지 않습니다.')
+          const paused = await pause.call(meetRef.current)
+          if (paused === false) throw new Error('회의를 일시정지할 수 있는 단계가 아닙니다.')
+          markTaskActivity('pausedMeeting')
+          useStore.getState().toast('Ⅱ 회의를 안전하게 일시정지했습니다. 언제든 지시를 추가하고 재개할 수 있습니다.')
+          break
+        }
         case MILESTONE_ACTION.WATCH_PLAYTEST:
           await travelTo('arcade', arcadeObserverTile, '오락실 테스트 현장', controller.signal)
           useStore.getState().openPanel('arcade')
@@ -471,6 +538,13 @@ export default function App() {
   const meetingActive = isMeetingActive(meeting)
   const meetingRuntime = meetingStatusCopy(meeting)
   const arcadeActive = arcade && ['running', 'summarizing'].includes(arcade.status)
+  const avatarProfile = avatarProfileId
+    ? [PLAYER, ...TEAM, ...VISITORS].find(avatar => avatar.id === avatarProfileId) || null
+    : null
+
+  useEffect(() => {
+    if (isMeetingPaused(meeting)) markTaskActivity('pausedMeeting')
+  }, [meeting?.status])
 
   function canvasPoint(e) {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -519,6 +593,8 @@ export default function App() {
         onSettings={() => useStore.getState().openPanel('settings')}
         onHelp={() => useStore.getState().openPanel('help')}
         onMilestone={requestMilestone}
+        onAvatarProfile={setAvatarProfileId}
+        taskActivity={taskActivity}
         journeyActive={milestoneFlow?.status === 'moving'}
         worldReady={ready}
       />
@@ -601,14 +677,15 @@ export default function App() {
       )}
 
       {panel === 'chat' && <ChatPanel world={engRef.current} />}
-      {panel === 'meeting' && <MeetingPanel meet={meetRef.current} onDeploy={deployToArcade} onPlay={id => useStore.getState().openPanel('play', { gameId: id })} />}
+      {panel === 'meeting' && <MeetingPanel meet={meetRef.current} onDeploy={deployToArcade} onPlay={id => openGame(id)} />}
       {panel === 'arcade' &&
         <ArcadePanel sim={simRef.current} onBack={() => { useStore.getState().closePanel(); if (useStore.getState().map === 'arcade') switchMap() }} />}
-      {panel === 'library' && <Library portable={!!panelData?.portable} onPlay={(id, v) => useStore.getState().openPanel('play', { gameId: id, version: v, portable: !!panelData?.portable, sourceId: panelData?.sourceId })} onUpgrade={g => useStore.getState().openPanel('meetingStart', { upgradeGame: g })} onDeploy={deployToArcade} />}
+      {panel === 'library' && <Library portable={!!panelData?.portable} onPlay={(id, v) => openGame(id, { version: v, portable: !!panelData?.portable, sourceId: panelData?.sourceId })} onUpgrade={g => useStore.getState().openPanel('meetingStart', { upgradeGame: g })} onDeploy={deployToArcade} />}
       {panel === 'play' && <PlayModal />}
       {panel === 'settings' && <Settings />}
       {panel === 'meetingStart' && <MeetingStart onStart={startMeeting} />}
       {panel === 'help' && <Help />}
+      {avatarProfile && <AvatarProfile avatar={avatarProfile} onClose={() => setAvatarProfileId(null)} />}
       {milestoneFlow && (
         <MilestoneConfirm
           milestone={milestoneFlow.objective}

@@ -197,6 +197,7 @@ code { padding: 2px 6px; border-radius: 6px; background: #ececf1; color: #454551
 .logo-type { display: flex; flex-direction: column; min-width: 0; line-height: 1; }
 .logo-type b { font-family: var(--font-pixel); font-size: 16px; letter-spacing: .6px; }
 .logo-type small { margin-top: 4px; color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: 1.25px; }
+.studio-task-shell { position: relative; min-width: 0; }
 .studio-objective { display: grid; width: 100%; min-width: 0; min-height: 44px; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 5px 7px 5px 8px; border: 1px solid #dedde9; border-radius: 12px; background: linear-gradient(180deg, #fbfbfd, #f5f5f9); box-shadow: none; text-align: left; }
 .studio-objective:hover:not(:disabled) { border-color: #bdb7e8; background: linear-gradient(180deg, #fff, #f4f2ff); box-shadow: 0 5px 15px rgba(62,53,132,.11); transform: translateY(-1px); }
 .studio-objective:active:not(:disabled) { transform: translateY(0); }
@@ -218,11 +219,37 @@ code { padding: 2px 6px; border-radius: 6px; background: #ececf1; color: #454551
 .studio-objective.testing .objective-next { color: #c33a7a; }
 .studio-objective.ready .objective-next { color: #13764a; }
 .studio-objective.warning .objective-next { color: #8b6200; }
+.studio-task-popover { position: absolute; top: calc(100% + 14px); left: 50%; z-index: 65; width: min(560px, calc(100vw - 32px)); overflow: hidden; border: 1px solid #d9d7e5; border-radius: 18px; background: rgba(255,255,255,.985); box-shadow: 0 22px 60px rgba(19,18,35,.24); transform: translateX(-50%); animation: taskListIn .16s ease-out; pointer-events: auto; }
+.studio-task-popover > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 12px; border-bottom: 1px solid #ebeaf0; background: linear-gradient(135deg,#f8f7ff,#fff); }
+.studio-task-popover > header div { display: flex; flex-direction: column; gap: 2px; }
+.studio-task-popover > header small { color: #817a9a; font-size: 8.5px; font-weight: 850; letter-spacing: .8px; }
+.studio-task-popover > header b { color: #292832; font-size: 14px; }
+.studio-task-popover > header > span { padding: 5px 8px; border-radius: 999px; background: #e9f7ef; color: #19784d; font-size: 9px; font-weight: 850; }
+.studio-task-items { display: grid; gap: 5px; max-height: min(420px, calc(100dvh - 190px)); padding: 9px; overflow-y: auto; }
+.studio-task-item { display: grid; width: 100%; min-height: 55px; grid-template-columns: 32px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid transparent; border-radius: 12px; background: #fafafd; box-shadow: none; text-align: left; }
+.studio-task-item:hover:not(:disabled) { border-color: #cfc9f5; background: #f5f3ff; transform: none; }
+.studio-task-item.active { border-color: #bfb7f1; background: linear-gradient(135deg,#f1efff,#faf9ff); }
+.studio-task-item.done { background: #f5faf7; }
+.studio-task-item.locked { opacity: .65; }
+.studio-task-item:disabled { cursor: not-allowed; }
+.task-order { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 9px; background: #e9e7f6; color: #5d52bd; font-size: 11px; font-weight: 900; }
+.studio-task-item.active .task-order { background: #6254d6; color: #fff; box-shadow: 0 0 0 4px rgba(98,84,214,.1); }
+.studio-task-item.done .task-order { background: #daf2e4; color: #15764a; }
+.studio-task-item.locked .task-order { background: #ececf0; color: #8a8b94; }
+.task-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.task-copy b { color: #303039; font-size: 11.5px; }
+.task-copy small { overflow: hidden; color: #787983; font-size: 9.5px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.task-state { padding: 4px 6px; border-radius: 7px; background: #eceaf9; color: #5e55ac; font-size: 8.5px; font-weight: 850; white-space: nowrap; }
+.studio-task-item.done .task-state { background: #def4e7; color: #16754a; }
+.studio-task-item.locked .task-state { background: #ececf0; color: #7e7f87; }
+.studio-task-popover > footer { padding: 9px 14px 11px; border-top: 1px solid #efedf3; color: #85838d; font-size: 8.5px; text-align: center; }
 .hud-right { display: flex; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
 .presence { display: flex; align-items: center; gap: 8px; padding-right: 10px; border-right: 1px solid var(--line); }
 .presence-faces { display: flex; padding-left: 8px; }
-.presence-faces img, .presence-faces span { width: 29px; height: 29px; margin-left: -8px; border: 2px solid #fff; border-radius: 50%; background: #ebeaf4; object-fit: cover; image-rendering: pixelated; }
-.presence-faces span { display: grid; place-items: center; background: #34343b; color: #fff; font-size: 9px; font-weight: 800; }
+.presence-avatar { position: relative; width: 29px; min-width: 29px; height: 29px; min-height: 29px; margin-left: -8px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #ebeaf4; box-shadow: none; overflow: visible; }
+.presence-avatar img { width: 25px; height: 25px; border-radius: inherit; object-fit: cover; image-rendering: pixelated; }
+.presence-avatar::after { position: absolute; right: -1px; bottom: -1px; width: 7px; height: 7px; border: 1.5px solid #fff; border-radius: 50%; background: var(--green); content: ''; }
+.presence-avatar:hover:not(:disabled), .presence-avatar:focus-visible { z-index: 2; border-color: #9d93ea; box-shadow: 0 0 0 3px rgba(98,84,214,.13); transform: translateY(-1px); }
 .presence small { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .llm-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 9px; border-radius: 999px; background: var(--panel2); color: var(--muted); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .llm-badge i { width: 7px; height: 7px; border-radius: 50%; background: #a6a8ae; }
@@ -775,6 +802,14 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
 .journey-copy b { overflow: hidden; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .journey-copy small { color: rgba(255,255,255,.57); font-size: 9.5px; }
 .milestone-journey-chip button { min-height: 32px; padding: 5px 9px; border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: #fff; font-size: 10px; }
+.avatar-profile { width: min(500px, calc(100vw - 24px)); }
+.avatar-profile-head { min-height: 78px; padding: 14px 16px; }
+.avatar-profile-head .face { width: 54px; height: 54px; border: 3px solid rgba(255,255,255,.9); border-radius: 16px; background: color-mix(in srgb, var(--avatar-color) 18%, #f4f3fb); box-shadow: 0 6px 16px rgba(28,27,39,.13); image-rendering: pixelated; }
+.avatar-profile-body { display: grid; gap: 12px; padding: 16px; }
+.avatar-profile-facts { margin: 0; }
+.avatar-profile-facts b { color: #34343b; }
+.avatar-profile-specialty, .avatar-profile-summary { margin: 0; }
+.avatar-profile-summary p { margin: 4px 0 0; font-size: 11px; line-height: 1.65; }
 .meeting-start-modal { width: 650px; }
 .meeting-start-head { border-top: 4px solid var(--accent); padding-top: 9px; }
 .meeting-intro { padding: 12px 13px; border: 1px solid #dcd9f1; border-radius: 12px; background: linear-gradient(135deg, #f4f2ff, #f8f8fd); color: #5f5d6a; font-size: 12.5px; line-height: 1.62; }
@@ -993,6 +1028,8 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
 @keyframes referenceSweep { to { transform: rotate(360deg); } }
 @keyframes referenceSpin { to { transform: rotate(360deg); } }
 @keyframes bootScan { 50% { filter: brightness(1.6); transform: scaleX(.72); } }
+@keyframes taskListIn { from { opacity: 0; transform: translate(-50%,-7px) scale(.985); } }
+@keyframes taskListMobileIn { from { opacity: 0; transform: translateY(-7px) scale(.985); } }
 
 @media (max-width: 1100px) {
   .hud { grid-template-columns: minmax(145px, .8fr) minmax(260px, 1.2fr) minmax(170px, .8fr); }
@@ -1004,8 +1041,11 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
 @media (max-width: 820px) {
   .stage { padding: 10px; }
   .hud { top: 8px; left: 8px; right: 8px; height: 54px; grid-template-columns: 1fr auto; padding: 7px 8px; border-radius: 14px; }
-  .presence, .llm-badge { display: none; }
-  .studio-objective { position: absolute; top: 62px; left: 50%; width: min(380px, calc(100vw - 128px)); min-height: 46px; border-color: rgba(255,255,255,.18); background: rgba(38,38,41,.92); color: #fff; box-shadow: var(--shadow-sm); transform: translateX(-50%); backdrop-filter: blur(12px); }
+  .presence { display: flex; gap: 0; padding-right: 4px; border-right: 0; }
+  .llm-badge { display: none; }
+  .studio-task-shell { position: absolute; top: 62px; left: 50%; width: min(380px, calc(100vw - 128px)); transform: translateX(-50%); }
+  .studio-objective { min-height: 46px; border-color: rgba(255,255,255,.18); background: rgba(38,38,41,.92); color: #fff; box-shadow: var(--shadow-sm); backdrop-filter: blur(12px); }
+  .studio-task-popover { top: calc(100% + 8px); }
   .objective-copy small, .objective-next small { color: rgba(255,255,255,.58); }
   .objective-next { border-left-color: rgba(255,255,255,.14); color: #d5cfff; }
   .objective-next i { color: #bdb5ff; }
@@ -1075,7 +1115,10 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
   .agent-arena-head .muted { display: none; }
   .logo-type b { font-size: 14px; }
   .hud-right { gap: 4px; }
-  .studio-objective { left: 8px; width: calc(100vw - 16px); transform: none; }
+  .studio-task-shell { left: 8px; width: calc(100vw - 16px); transform: none; }
+  .studio-task-popover { position: fixed; top: 122px; right: 8px; left: 8px; width: auto; transform: none; animation-name: taskListMobileIn; }
+  .studio-task-items { max-height: calc(100dvh - 230px); }
+  .task-copy small { max-width: 215px; }
   .objective-icon { width: 30px; height: 30px; }
   .objective-next { min-width: 62px; }
   .objective-next b { max-width: 76px; }
@@ -1089,6 +1132,7 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
   .milestone-route > span { flex-direction: column; text-align: center; }
   .milestone-route small { width: 100%; }
   .milestone-confirm-actions .primary { min-width: 0; }
+  .avatar-profile { width: 100%; }
   .journey-copy small { display: none; }
   .icon-btn { width: 32px; min-width: 32px; height: 32px; min-height: 32px; }
   .map-badge small { display: none; }

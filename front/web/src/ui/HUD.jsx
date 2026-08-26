@@ -2,9 +2,10 @@ import React from 'react'
 import { useStore } from '../state/store.js'
 import { TEAM } from '../data/personas.js'
 import { isMeetingActive, meetingStatusCopy } from '../meeting/status.js'
-import { getStudioMilestone } from './milestone.js'
+import { getStudioMilestone, getStudioMilestones } from './milestone.js'
+import StudioTaskList from './StudioTaskList.jsx'
 
-export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp, onMilestone, journeyActive = false, worldReady = true }) {
+export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp, onMilestone, onAvatarProfile, taskActivity = null, journeyActive = false, worldReady = true }) {
   const config = useStore(s => s.config)
   const games = useStore(s => s.games)
   const map = useStore(s => s.map)
@@ -15,6 +16,7 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
   const meetingRuntime = meetingStatusCopy(meeting)
   const arcadeActive = arcade && ['running', 'summarizing'].includes(arcade.status)
   const objective = getStudioMilestone({ games, meeting, arcade, studio, map })
+  const tasks = getStudioMilestones({ games, meeting, arcade, studio, map, taskActivity })
   const interactionDisabled = journeyActive || !worldReady
 
   return (
@@ -25,30 +27,24 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
           <span className="logo-type"><b>DOTCADE</b><small>GAME STUDIO</small></span>
         </div>
 
-        <button
-          type="button"
-          className={`studio-objective ${objective.tone}`}
-          onClick={() => onMilestone?.(objective)}
-          disabled={interactionDisabled}
-          title={`${objective.detail} · 클릭해 바로 진행`}
-          aria-label={`${objective.kicker}: ${objective.title}. ${objective.actionLabel}`}
-        >
-          <span className="objective-icon" aria-hidden="true">{objective.icon}</span>
-          <span className="objective-copy">
-            <small>{objective.kicker}</small>
-            <b title={objective.title}>{objective.title}</b>
-            <span className="objective-track" aria-hidden="true"><i style={{ width: `${Math.max(3, Math.min(100, objective.progress))}%` }} /></span>
-          </span>
-          <span className="objective-next"><small>{objective.step}</small><b>{objective.actionLabel}</b><i aria-hidden="true">›</i></span>
-        </button>
+        <StudioTaskList tasks={tasks} recommended={objective} disabled={interactionDisabled} onSelect={onMilestone} />
 
         <div className="hud-right">
           <div className="presence" aria-label={`온라인 ${TEAM.length + 1}명`}>
             <div className="presence-faces">
-              {TEAM.slice(0, 4).map(member => (
-                <img key={member.id} src={`/assets/sprites_v2/${member.sprite}/face.png`} alt={member.name} title={`${member.name} · ${member.role}`} />
+              {TEAM.map(member => (
+                <button
+                  key={member.id}
+                  type="button"
+                  className="presence-avatar"
+                  onClick={() => onAvatarProfile?.(member.id)}
+                  disabled={journeyActive}
+                  title={`${member.name} · ${member.role} 정보 보기`}
+                  aria-label={`${member.name} ${member.role} 아바타 정보 보기`}
+                >
+                  <img src={`/assets/sprites_v2/${member.sprite}/face.png`} alt="" />
+                </button>
               ))}
-              <span>+{Math.max(1, TEAM.length - 3)}</span>
             </div>
             <small>{TEAM.length + 1} online</small>
           </div>
