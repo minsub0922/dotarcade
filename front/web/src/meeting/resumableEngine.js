@@ -34,6 +34,7 @@ const S = () => useStore.getState()
 
 class PauseSignal extends Error { constructor() { super('meeting-paused'); this.name = 'PauseSignal' } }
 class CancelSignal extends Error { constructor() { super('meeting-cancelled'); this.name = 'CancelSignal' } }
+class QaSkipSignal extends Error { constructor() { super('meeting-qa-skipped'); this.name = 'QaSkipSignal' } }
 class CheckpointSaveError extends Error {
   constructor(cause) {
     super(`체크포인트 저장 실패: ${String(cause?.message || cause)}`)
@@ -45,6 +46,11 @@ class CheckpointSaveError extends Error {
   }
 }
 const isAbortError = error => error?.name === 'AbortError' || /aborted|abort/i.test(String(error?.message || ''))
+const abortError = message => {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
 
 export class MeetingEngine {
   constructor(world, dependencies = {}) {
@@ -54,6 +60,7 @@ export class MeetingEngine {
     this.sleep = dependencies.sleep || wait
     this.cancelled = false
     this.pauseRequested = false
+    this.qaSkipRequested = false
     this.context = null
     this._abort = null
     this._approval = null
@@ -74,6 +81,7 @@ export class MeetingEngine {
     }
     this.cancelled = false
     this.pauseRequested = false
+    this.qaSkipRequested = false
     this._pendingControl = []
     const record = await this.api.createMeeting({
       agenda,
@@ -118,6 +126,10 @@ export class MeetingEngine {
       upgrade: !!upgradeGame,
       approval: null,
       qaPreview: false,
+      qaSkippable: false,
+      qaSkipPending: false,
+      qaSkipped: false,
+      qaActivity: null,
       research: initialResearch,
       directionGate: null,
       direction: null,
@@ -148,11 +160,13 @@ export class MeetingEngine {
     this.context = checkpoint.context
     this.cancelled = false
     this.pauseRequested = false
+    this.qaSkipRequested = false
     this._pendingControl = []
     const restored = {
       ...checkpoint.meeting,
       status: 'paused',
       qaPreview: false,
+      qaSkipPending: false,
       approval: checkpoint.context.gates?.approval ? checkpoint.meeting.approval : null,
       directionGate: checkpoint.context.gates?.direction ? checkpoint.meeting.directionGate : null,
       checkpointMeta: this._checkpointMeta(checkpoint),
@@ -189,9 +203,11 @@ export class MeetingEngine {
       createdAt: new Date().toISOString()
     } : null
     if (pending) this._pendingControl.push(pending)
+    this.qaSkipRequested = false
     this.pauseRequested = true
     S().setMeeting({
       status: 'pausing',
+      qaSkipPending: false,
       hitl: { status: 'pausing', pending: [...(this.context?.pendingInterventions || []), ...this._pendingControl] },
       checkpointError: null
     })
@@ -260,6 +276,7 @@ export class MeetingEngine {
     })
     this.pauseRequested = false
     this.cancelled = false
+    this.qaSkipRequested = false
     this._seatMeeting()
     const resumingMeeting = clone(S().meeting)
     this._thawGateTimers(this.context, resumingMeeting)
@@ -306,10 +323,11 @@ export class MeetingEngine {
     if (!meeting || ['done', 'cancelled'].includes(meeting.status)) return false
     this.cancelled = true
     this.pauseRequested = false
+    this.qaSkipRequested = false
     this._finishDirection('__cancel__')
     this._finishApproval('__cancel__')
     this._abort?.abort()
-    S().setMeeting({ status: 'cancelled', approval: null, directionGate: null, hitl: { status: 'idle', pending: [] } })
+    S().setMeeting({ status: 'cancelled', approval: null, directionGate: null, qaSkipPending: false, hitl: { status: 'idle', pending: [] } })
     this._say('system', 'system', '회의를 안전하게 종료했습니다. 마지막 체크포인트와 전체 회의 기록은 보존됩니다.')
     try {
       await this._checkpoint('cancelled')
@@ -338,6 +356,27 @@ export class MeetingEngine {
       this.context.gates.direction.auto = false
       if (S().meeting?.status === 'paused') void this.resume()
     }
+  }
+
+  async skipQa() {
+    const meeting = S().meeting
+    const qaNode = this.context?.cursor?.node
+    const validStatus = ['running', 'resuming', 'paused', 'error'].includes(meeting?.status)
+    if (!meeting || meeting.phase !== 'qa' || !['qa_test', 'qa_repair'].includes(qaNode) || !validStatus) return false
+    if (this.qaSkipRequested || meeting.qaSkipPending) return true
+
+    this.qaSkipRequested = true
+    S().setMeeting({ qaSkipPending: true, qaSkippable: true })
+    this._abort?.abort()
+
+    // A restored or manually paused QA node has no in-flight atomic task to
+    // abort. Commit the same explicit "unverified" transition, then resume the
+    // durable workflow from release preparation.
+    if (['paused', 'error'].includes(meeting.status)) {
+      this._finishQaSkip()
+      await this.resume()
+    }
+    return true
   }
 
   _checkpointMeta(checkpoint) {
@@ -543,12 +582,14 @@ export class MeetingEngine {
   async _atomic(label, task) {
     const beforeContext = clone(this.context)
     const beforeMeeting = clone(S().meeting)
+    const qaNode = ['qa_test', 'qa_repair'].includes(beforeContext?.cursor?.node)
     const controller = new AbortController()
     this._abort = controller
     try {
       const result = await task(controller.signal)
       if (this.cancelled) throw new CancelSignal()
       if (this.pauseRequested) throw new PauseSignal()
+      if (qaNode && this.qaSkipRequested) throw new QaSkipSignal()
       return result
     } catch (error) {
       if (this.cancelled || error instanceof CancelSignal) {
@@ -567,6 +608,11 @@ export class MeetingEngine {
         this.context = beforeContext
         S().replaceMeeting(beforeMeeting)
         throw new PauseSignal()
+      }
+      if (qaNode && this.qaSkipRequested && (error instanceof QaSkipSignal || isAbortError(error))) {
+        this.context = beforeContext
+        S().replaceMeeting({ ...beforeMeeting, qaPreview: false, qaSkipPending: true })
+        throw new QaSkipSignal()
       }
       this.context = beforeContext
       S().replaceMeeting(beforeMeeting)
@@ -1122,8 +1168,85 @@ export class MeetingEngine {
     }
   }
 
+  async _qaPreviewMount(signal) {
+    if (typeof document === 'undefined') return null
+    const nextFrame = () => new Promise(resolve => {
+      if (typeof globalThis.requestAnimationFrame === 'function') globalThis.requestAnimationFrame(resolve)
+      else globalThis.setTimeout(resolve, 0)
+    })
+    // Zustand updates immediately, while React may need a paint to switch back
+    // to the transcript tab and commit the enlarged preview slot.
+    for (let frame = 0; frame < 4; frame++) {
+      if (signal?.aborted) throw abortError('QA preview mount aborted')
+      const mount = document.getElementById('qa-preview-slot')
+      if (mount) return mount
+      await nextFrame()
+    }
+    if (signal?.aborted) throw abortError('QA preview mount aborted')
+    return document.getElementById('qa-preview-slot')
+  }
+
+  _finishQaSkip() {
+    const qaMember = TEAM.find(member => member.id === 'dev1')
+    const attempt = (this.context.qa.attempt || 0) + 1
+    const skippedAt = new Date().toISOString()
+    const diagnostics = {
+      ...(this.context.qa.diagnostics || {}),
+      skipped: true,
+      reason: 'user-fast-release',
+      message: '팀장 선택으로 자동 QA를 건너뜀'
+    }
+    const alreadyRecorded = this.context.qa.history.some(item => item.skipped)
+    this.context.qa.pass = false
+    this.context.qa.skipped = true
+    this.context.qa.skippedAt = skippedAt
+    this.context.qa.diagnostics = diagnostics
+    if (!alreadyRecorded) {
+      this.context.qa.history.push({
+        attempt,
+        pass: false,
+        skipped: true,
+        skippedAt,
+        diagnostics: clone(diagnostics),
+        codeHash: this._codeHash(this.context.artifacts.code)
+      })
+    }
+    if (this.context.research.referenceDesignContract) {
+      this._updateReference({
+        contractStatus: {
+          stage: 'unstable',
+          attempt,
+          issues: ['팀장 선택으로 자동 QA를 건너뜀'],
+          ...this._referenceTrace()
+        }
+      })
+    }
+    this.context.cursor.node = 'release_prepare'
+    this.context.cursor.qaAttempt = this.context.qa.attempt || 0
+    this.qaSkipRequested = false
+    S().setMeeting({
+      qaPreview: false,
+      qaSkippable: false,
+      qaSkipPending: false,
+      qaSkipped: true,
+      qaActivity: null
+    })
+    if (!S().meeting.transcript.some(entry => entry.qaSkipped)) {
+      this._say(
+        qaMember?.id || 'system',
+        'qa',
+        '⚡ 팀장 선택으로 자동 QA를 건너뜁니다. QA 미검증 상태를 명시하고 빠른 릴리즈 준비로 이동합니다.',
+        'qa',
+        { qaSkipped: true }
+      )
+    }
+    S().toast('⚡ QA를 건너뛰고 빠른 배포를 준비합니다.', 'warn')
+  }
+
   async _runQaTest() {
     this._phase('qa')
+    S().setMeeting({ qaSkippable: true, qaActivity: 'testing' })
+    if (this.qaSkipRequested) return this._finishQaSkip()
     const qaMember = TEAM.find(member => member.id === 'dev1')
     const contract = this.context.research.referenceDesignContract
     const code = this.context.artifacts.code
@@ -1131,21 +1254,27 @@ export class MeetingEngine {
       .test(`${this.context.input.agenda}\n${this.context.artifacts.prd}`)
     const requiredScreens = visualQaRequiredScreens(contract, { collectionFallback: collectionVisual })
     const attempt = this.context.qa.attempt || 0
-    const outcome = await this._atomic(`qa:${attempt + 1}`, async signal => {
-      if (contract) this._updateReference({
-        contractStatus: { stage: 'testing', attempt: attempt + 1, issues: [], ...this._referenceTrace(code) }
-      })
-      this.world?.bubble?.(qaMember.id, `🧪 스모크 테스트 ${attempt + 1}차...`, 5000)
-      this._say(qaMember.id, 'qa', `자동 QA ${attempt + 1}차 실행 — 샌드박스에서 봇 플레이 테스트 중...`)
-      S().setMeeting({ qaPreview: true, qaCode: code, qaNonce: Date.now() })
-      const mountEl = typeof document === 'undefined' ? null : document.getElementById('qa-preview-slot')
-      try {
-        return await this.smokeTest(code, {
-          mountEl, durationMs: 9000, strictVisual: true,
-          requiredScreens, designContract: contract, signal
+    let outcome
+    try {
+      outcome = await this._atomic(`qa:${attempt + 1}`, async signal => {
+        if (contract) this._updateReference({
+          contractStatus: { stage: 'testing', attempt: attempt + 1, issues: [], ...this._referenceTrace(code) }
         })
-      } finally { S().setMeeting({ qaPreview: false }) }
-    })
+        this.world?.bubble?.(qaMember.id, `🧪 스모크 테스트 ${attempt + 1}차...`, 5000)
+        this._say(qaMember.id, 'qa', `자동 QA ${attempt + 1}차 실행 — 샌드박스에서 봇 플레이 테스트 중...`)
+        S().setMeeting({ qaPreview: true, qaCode: code, qaNonce: Date.now() })
+        const mountEl = await this._qaPreviewMount(signal)
+        try {
+          return await this.smokeTest(code, {
+            mountEl, durationMs: 9000, strictVisual: true,
+            requiredScreens, designContract: contract, signal
+          })
+        } finally { S().setMeeting({ qaPreview: false }) }
+      })
+    } catch (error) {
+      if (error instanceof QaSkipSignal) return this._finishQaSkip()
+      throw error
+    }
     const diagnostics = clone(outcome?.diagnostics || {})
     this.context.qa.diagnostics = diagnostics
     this.context.qa.pass = !!outcome?.pass
@@ -1165,6 +1294,7 @@ export class MeetingEngine {
     if (outcome.pass) {
       this._say(qaMember.id, 'qa', `✅ QA 통과 — 봇 플레이 점수 ${diagnostics.score}, 오류 0건, 2.5D${contract ? '·레퍼런스 디자인 계약' : ' 비주얼 계약'} 충족.`)
       this.context.cursor.node = 'release_prepare'
+      S().setMeeting({ qaSkippable: false, qaActivity: null })
       return
     }
     const failure = diagnostics.fatal || diagnostics.errors?.[0] || diagnostics.visual?.missing?.[0] ||
@@ -1173,33 +1303,45 @@ export class MeetingEngine {
     if (attempt >= 2) {
       this._say(qaMember.id, 'qa', `⚠️ QA 미통과 상태로 릴리즈합니다 (진단: ${JSON.stringify(diagnostics).slice(0, 200)}). 다음 버전에서 개선 필요.`)
       this.context.cursor.node = 'release_prepare'
-    } else this.context.cursor.node = 'qa_repair'
+      S().setMeeting({ qaSkippable: false, qaActivity: null })
+    } else {
+      this.context.cursor.node = 'qa_repair'
+      S().setMeeting({ qaActivity: 'repairing' })
+    }
   }
 
   async _runQaRepair() {
     this._phase('qa')
+    S().setMeeting({ qaSkippable: true, qaActivity: 'repairing' })
+    if (this.qaSkipRequested) return this._finishQaSkip()
     const developer = TEAM.find(member => member.id === 'dev2')
     const attempt = this.context.qa.attempt || 0
-    await this._atomic(`repair:${attempt + 1}`, async signal => {
-      this.world?.bubble?.(developer.id, '🔧 버그 수정 중...', 6000)
-      const prompt = P.repair(
-        this.context.artifacts.code,
-        this.context.qa.diagnostics,
-        this.context.research.referenceDesignContract,
-        this.context.input.agenda
-      )
-      const out = await this._generate(developer, {
-        prompt, phase: 'qa', hint: 'repair', model: 'smart', signal,
-        kind: 'code', turnId: `repair:${attempt + 1}`
+    try {
+      await this._atomic(`repair:${attempt + 1}`, async signal => {
+        this.world?.bubble?.(developer.id, '🔧 버그 수정 중...', 6000)
+        const prompt = P.repair(
+          this.context.artifacts.code,
+          this.context.qa.diagnostics,
+          this.context.research.referenceDesignContract,
+          this.context.input.agenda
+        )
+        const out = await this._generate(developer, {
+          prompt, phase: 'qa', hint: 'repair', model: 'smart', signal,
+          kind: 'code', turnId: `repair:${attempt + 1}`
+        })
+        const code = extractCode(out.text)
+        this.context.artifacts.code = code
+        S().setMeeting({ artifacts: { ...S().meeting.artifacts, code } })
+        this._say(developer.id, 'talk', '수정본 나왔습니다. 다시 테스트 부탁해요.', 'qa')
       })
-      const code = extractCode(out.text)
-      this.context.artifacts.code = code
-      S().setMeeting({ artifacts: { ...S().meeting.artifacts, code } })
-      this._say(developer.id, 'talk', '수정본 나왔습니다. 다시 테스트 부탁해요.', 'qa')
-    })
+    } catch (error) {
+      if (error instanceof QaSkipSignal) return this._finishQaSkip()
+      throw error
+    }
     this.context.qa.attempt = attempt + 1
     this.context.cursor.qaAttempt = this.context.qa.attempt
     this.context.cursor.node = 'qa_test'
+    S().setMeeting({ qaActivity: 'testing' })
   }
 
   async _prepareRelease() {
@@ -1247,6 +1389,7 @@ export class MeetingEngine {
           id: meta.id, title: meta.title, desc: meta.desc, genre: meta.genre,
           controls: meta.controls, emoji: meta.emoji, color: meta.color,
           qa: this.context.qa.pass ? 'pass' : 'unstable',
+          qaSkipped: !!this.context.qa.skipped,
           ...(referenceSummary ? { reference: referenceSummary } : {})
         }, null, 2),
         'README.md': `# ${meta.emoji} ${meta.title}\n\n${meta.desc}\n\n- 장르: ${meta.genre}\n- 조작: ${meta.controls.join(', ')}\n- 제작: DOTCADE 스튜디오 (BMAD 멀티에이전트 회의)\n- 안건: ${this.context.input.agenda}\n`,

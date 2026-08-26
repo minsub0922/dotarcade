@@ -765,6 +765,104 @@ test('QA smoke test receives HITL AbortSignal and rolls back its partial diagnos
   assert.equal(useStore.getState().meeting.status, 'paused')
 })
 
+test('QA skip aborts the live smoke test once and checkpoints an explicit unverified release', async () => {
+  resetStore()
+  const context = createMeetingRunContext({ agenda: 'QA를 선택적으로 건너뛰는 신작' })
+  context.cursor.node = 'qa_test'
+  context.direction = {
+    id: 'speed', title: '빠른 출시',
+    mission: { id: 'qa-skip:speed', metric: 'release', target: 1, label: '빠른 릴리즈' }
+  }
+  context.artifacts.code = 'window.game = { start() {}, dispose() {} }'
+  const meeting = researchMeeting(context, { id: 'meeting-qa-skip', status: 'running' })
+  meeting.phase = 'qa'
+  meeting.phaseLabel = 'QA'
+  meeting.artifacts = copy(context.artifacts)
+  useStore.getState().replaceMeeting(meeting)
+
+  const smokeStarted = deferred()
+  let smokeSignal = null
+  const checkpointer = new FakeCheckpointer()
+  const engine = new MeetingEngine(fakeWorld(), {
+    api: baseApi(),
+    checkpointer,
+    smokeTest: (_code, { signal }) => {
+      smokeSignal = signal
+      smokeStarted.resolve()
+      return rejectWhenAborted(signal)
+    },
+    sleep: async () => {}
+  })
+  engine.context = context
+
+  const qaRun = engine._runQaTest()
+  await within(smokeStarted.promise, 'QA smoke start before skip')
+  const [firstSkip, duplicateSkip] = await Promise.all([engine.skipQa(), engine.skipQa()])
+  await within(qaRun, 'QA skip transition')
+
+  assert.equal(firstSkip, true)
+  assert.equal(duplicateSkip, true)
+  assert.equal(smokeSignal.aborted, true)
+  assert.equal(engine.context.cursor.node, 'release_prepare')
+  assert.equal(engine.context.qa.pass, false)
+  assert.equal(engine.context.qa.skipped, true)
+  assert.equal(engine.context.qa.diagnostics.reason, 'user-fast-release')
+  assert.equal(engine.context.qa.history.filter(entry => entry.skipped).length, 1)
+  assert.equal(useStore.getState().meeting.qaPreview, false)
+  assert.equal(useStore.getState().meeting.qaSkipPending, false)
+  assert.equal(useStore.getState().meeting.qaSkipped, true)
+  assert.equal(useStore.getState().meeting.transcript.filter(entry => entry.qaSkipped).length, 1)
+
+  const checkpoint = await engine._checkpoint('running')
+  assert.equal(checkpoint.cursor.node, 'release_prepare')
+  assert.equal(checkpoint.context.qa.skipped, true)
+})
+
+test('QA skip aborts an in-flight repair and rolls back the unfinished code change', async () => {
+  resetStore()
+  const context = createMeetingRunContext({ agenda: '수리 중 빠른 배포' })
+  context.cursor.node = 'qa_repair'
+  context.direction = {
+    id: 'speed', title: '빠른 출시',
+    mission: { id: 'qa-repair-skip:speed', metric: 'release', target: 1, label: '빠른 릴리즈' }
+  }
+  context.artifacts.code = 'window.game = { version: "original" }'
+  context.qa.diagnostics = { fatal: '테스트용 오류' }
+  const meeting = researchMeeting(context, { id: 'meeting-qa-repair-skip', status: 'running' })
+  meeting.phase = 'qa'
+  meeting.phaseLabel = 'QA'
+  meeting.artifacts = copy(context.artifacts)
+  useStore.getState().replaceMeeting(meeting)
+
+  const repairStarted = deferred()
+  let repairSignal = null
+  const engine = new MeetingEngine(fakeWorld(), {
+    api: baseApi({
+      generate(_body, { signal } = {}) {
+        repairSignal = signal
+        repairStarted.resolve()
+        return rejectWhenAborted(signal)
+      }
+    }),
+    checkpointer: new FakeCheckpointer(),
+    smokeTest: async () => ({ pass: true, diagnostics: {} }),
+    sleep: async () => {}
+  })
+  engine.context = context
+
+  const repairRun = engine._runQaRepair()
+  await within(repairStarted.promise, 'QA repair start before skip')
+  assert.equal(await engine.skipQa(), true)
+  await within(repairRun, 'QA repair skip transition')
+
+  assert.equal(repairSignal.aborted, true)
+  assert.equal(engine.context.artifacts.code, 'window.game = { version: "original" }')
+  assert.equal(useStore.getState().meeting.artifacts.code, 'window.game = { version: "original" }')
+  assert.equal(engine.context.cursor.node, 'release_prepare')
+  assert.equal(engine.context.qa.skipped, true)
+  assert.equal(engine.context.qa.history.filter(entry => entry.skipped).length, 1)
+})
+
 test('release save and reward effects remain exactly-once when their nodes are retried', async () => {
   resetStore()
   const context = createMeetingRunContext({ agenda: '릴리즈 멱등성 테스트' })

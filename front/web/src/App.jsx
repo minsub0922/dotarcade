@@ -19,10 +19,11 @@ import Toasts from './ui/Toasts.jsx'
 import ReportModal from './ui/ReportModal.jsx'
 import MilestoneConfirm from './ui/MilestoneConfirm.jsx'
 import AvatarProfile from './ui/AvatarProfile.jsx'
+import TaskGuideChip from './ui/TaskGuideChip.jsx'
 import { PHASES } from './meeting/prompts.js'
 import { isMeetingActive, isMeetingPaused, meetingStatusCopy } from './meeting/status.js'
 import { PHASE_ICONS } from './ui/PhaseStepper.jsx'
-import { getMilestoneConflict, MILESTONE_ACTION } from './ui/milestone.js'
+import { getMilestoneConflict, getStudioMilestone, MILESTONE_ACTION } from './ui/milestone.js'
 
 const TRAVEL_CANCELLED = 'milestone-travel-cancelled'
 const TASK_ACTIVITY_KEY = 'dotcade-studio-task-activity'
@@ -108,8 +109,10 @@ export default function App() {
   const [zoom, setZoom] = useState(1)
   const [milestoneFlow, setMilestoneFlow] = useState(null)
   const [taskActivity, setTaskActivity] = useState(readTaskActivity)
+  const [taskGuide, setTaskGuide] = useState(null)
   const [avatarProfileId, setAvatarProfileId] = useState(null)
   const journeyRef = useRef(null)
+  const taskGuideRef = useRef(null)
   const { panel, panelData, map, hint } = useStore()
 
   // ---------- boot ----------
@@ -256,8 +259,22 @@ export default function App() {
   }, [])
 
   // ---------- 상호작용 ----------
+  function showTaskGuide(guide) {
+    clearTaskGuide()
+    taskGuideRef.current = guide
+    setTaskGuide(guide)
+  }
+
+  function clearTaskGuide() {
+    const current = taskGuideRef.current
+    if (current?.agentId) engRef.current?.resumeAutonomy?.(current.agentId, current.suspensionReason)
+    taskGuideRef.current = null
+    setTaskGuide(null)
+  }
+
   function markTaskActivity(key) {
     if (!key) return
+    if (key === 'socialized') clearTaskGuide()
     setTaskActivity(previous => {
       if (previous[key]) return previous
       const next = { ...previous, [key]: Date.now() }
@@ -326,6 +343,7 @@ export default function App() {
   }
 
   function switchMap() {
+    clearTaskGuide()
     settleForActivity('공간 이동')
     setWorldMap(useStore.getState().map === 'office' ? 'arcade' : 'office')
   }
@@ -387,7 +405,36 @@ export default function App() {
       : freeRoam?.mounted
         ? { label: freeRoam.mounted.label, verb: '타고 있는' }
         : null
+    clearTaskGuide()
     setMilestoneFlow({ objective, status: 'confirm', label: '', carry })
+  }
+
+  function requestGameDeployment(game) {
+    if (!game) return
+    const st = useStore.getState()
+    const recommended = getStudioMilestone({
+      games: st.games,
+      meeting: st.meeting,
+      arcade: st.arcade,
+      studio: st.studio,
+      map: st.map
+    })
+    const objective = recommended?.action === MILESTONE_ACTION.START_PLAYTEST && recommended.gameId === game.id
+      ? recommended
+      : {
+          action: MILESTONE_ACTION.START_PLAYTEST,
+          gameId: game.id,
+          icon: '▶',
+          tone: 'ready',
+          kicker: '신규 게임 제작 완료',
+          title: `「${game.title}」 신규 게임 배포`,
+          detail: '오락실에 배포하고 AI 손님 20명의 플레이 반응을 확인합니다.',
+          confirmTitle: `「${game.title} ${game.version || ''}」을 오락실에 배포할까요?`,
+          destination: '오락실 테스트 캐비닛',
+          actionLabel: '이동하고 20명 평가 시작',
+          arrivalNote: '도착하면 배포 시뮬레이션이 자동으로 시작됩니다.'
+        }
+    requestMilestone(objective)
   }
 
   function cancelMilestone() {
@@ -463,9 +510,26 @@ export default function App() {
           const ty = Math.floor(nearest.entity.y / 48)
           const approach = [[tx - 1, ty], [tx + 1, ty], [tx, ty + 1], [tx, ty - 1]]
             .find(([x, y]) => eng.maps.office.collision[y]?.[x] === '.') || [tx, ty]
-          await travelTo('office', approach, `${nearest.member.name} 자리`, controller.signal)
-          interact({ type: 'agent', id: nearest.member.id })
-          useStore.getState().toast('💬 대화를 나누거나, 주변 책을 집어 F로 던져 반응을 확인해 보세요.')
+          const suspensionReason = `task-guide:${objective.id || objective.action}`
+          eng.suspendAutonomy?.(nearest.member.id, suspensionReason)
+          nearest.entity.path = []
+          nearest.entity.cb = null
+          try {
+            await travelTo('office', approach, `${nearest.member.name} 자리`, controller.signal)
+          } catch (error) {
+            eng.resumeAutonomy?.(nearest.member.id, suspensionReason)
+            throw error
+          }
+          eng.player.dir = eng.player.x < nearest.entity.x ? 'right' : 'left'
+          eng._computeHint()
+          showTaskGuide({
+            id: objective.id,
+            icon: objective.icon || '💬',
+            title: `${nearest.member.name}에게 직접 상호작용해 보세요`,
+            text: objective.guide || 'E로 대화하거나, 주변 소품을 E로 집은 뒤 F로 던져 맞혀 보세요.',
+            agentId: nearest.member.id,
+            suspensionReason
+          })
           break
         }
         case MILESTONE_ACTION.PLAY_GAME: {
@@ -629,6 +693,7 @@ export default function App() {
               <kbd>R</kbd><span><b>{rideHint.label}</b><small>{rideHint.detail || '빠른 이동'}</small></span>
             </button>
           )}
+          {taskGuide && !panel && <TaskGuideChip guide={taskGuide} onClose={clearTaskGuide} />}
           <div className="map-badge"><span>{map === 'office' ? '▦' : '◆'}</span><div><b>{map === 'office' ? '사무실' : '오락실'}</b><small>{map === 'office' ? '팀원 5명과 함께' : '플레이 테스트 공간'}</small></div></div>
           {meetingActive && panel !== 'meeting' && (
             <button className={`meeting-float ${meetingRuntime.tone}`} onClick={() => useStore.getState().openPanel('meeting')} title="회의 패널 열기" aria-label={`${meetingRuntime.label} · 회의 패널 열기`}>
@@ -678,7 +743,7 @@ export default function App() {
       )}
 
       {panel === 'chat' && <ChatPanel world={engRef.current} />}
-      {panel === 'meeting' && <MeetingPanel meet={meetRef.current} onDeploy={deployToArcade} onPlay={id => openGame(id)} />}
+      {panel === 'meeting' && <MeetingPanel meet={meetRef.current} onDeploy={requestGameDeployment} onPlay={id => openGame(id)} />}
       {panel === 'arcade' &&
         <ArcadePanel sim={simRef.current} onBack={() => { useStore.getState().closePanel(); if (useStore.getState().map === 'arcade') switchMap() }} />}
       {panel === 'library' && <Library portable={!!panelData?.portable} onPlay={(id, v) => openGame(id, { version: v, portable: !!panelData?.portable, sourceId: panelData?.sourceId })} onUpgrade={g => useStore.getState().openPanel('meetingStart', { upgradeGame: g })} onDeploy={deployToArcade} />}

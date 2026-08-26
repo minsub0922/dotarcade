@@ -2,7 +2,7 @@ import React from 'react'
 import { useStore } from '../state/store.js'
 import { TEAM } from '../data/personas.js'
 import { isMeetingActive, meetingStatusCopy } from '../meeting/status.js'
-import { getStudioMilestone, getStudioMilestones } from './milestone.js'
+import { getStudioMilestone, getStudioMilestones, MILESTONE_ACTION } from './milestone.js'
 import StudioTaskList from './StudioTaskList.jsx'
 
 export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp, onMilestone, onAvatarProfile, taskActivity = null, journeyActive = false, worldReady = true }) {
@@ -18,6 +18,8 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
   const objective = getStudioMilestone({ games, meeting, arcade, studio, map })
   const tasks = getStudioMilestones({ games, meeting, arcade, studio, map, taskActivity })
   const interactionDisabled = journeyActive || !worldReady
+  const deploymentReady = objective?.action === MILESTONE_ACTION.START_PLAYTEST
+  const deploymentGame = deploymentReady ? games.find(game => game.id === objective.gameId) : null
 
   return (
     <div className="hud-layer">
@@ -65,6 +67,17 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
         </button>
         <button className="hud-action" onClick={onArcade} disabled={interactionDisabled || meetingActive || arcadeActive} title={map === 'office' ? '오락실로 이동' : '사무실로 이동'} aria-label={map === 'office' ? '오락실로 이동' : '사무실로 이동'}>
           <span className="action-icon arcade-icon">{map === 'office' ? '♢' : '▦'}</span><span className="action-label"><b>{map === 'office' ? '오락실' : '사무실'}</b><small>공간 이동</small></span>
+        </button>
+        <button
+          className={`hud-action deploy-action ${deploymentReady ? 'ready' : ''}`}
+          onClick={() => deploymentReady && onMilestone?.(objective)}
+          disabled={interactionDisabled || meetingActive || arcadeActive || !deploymentReady || !deploymentGame}
+          title={deploymentReady ? `「${deploymentGame?.title || '신규 게임'}」을 오락실에 배포` : '새 게임 제작이 완료되면 활성화됩니다'}
+          aria-label={deploymentReady ? `신규 게임 배포하기 · ${deploymentGame?.title || ''}` : '신규 게임 배포하기 · 게임 제작 후 활성화'}
+        >
+          <span className="action-icon deploy-icon">🚀</span>
+          <span className="action-label"><b>신규 게임 배포하기</b><small>{deploymentReady ? `${deploymentGame?.title} · 20명 시뮬레이션` : '게임 제작 후 활성화'}</small></span>
+          {deploymentReady && <span className="deploy-ready-dot" aria-hidden="true" />}
         </button>
         {(meetingActive || arcadeActive) && <span className="rail-divider" />}
         {meetingActive && (

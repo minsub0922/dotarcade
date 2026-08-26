@@ -86,7 +86,7 @@ export function createMeetingRunContext({
     upgrade: { info: '', currentCode: '' },
     direction: null,
     artifacts: { prd: '', design: '', arch: '', code: '' },
-    qa: { attempt: 0, diagnostics: null, pass: null, history: [] },
+    qa: { attempt: 0, diagnostics: null, pass: null, skipped: false, skippedAt: null, history: [] },
     interventions: [],
     pendingInterventions: [],
     gates: { direction: null, approval: null },

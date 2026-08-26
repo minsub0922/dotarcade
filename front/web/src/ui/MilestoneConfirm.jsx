@@ -47,9 +47,11 @@ export default function MilestoneConfirm({ milestone, journey, carry, onConfirm,
 
           {carry?.label && <div className="milestone-carry-note">✋ {carry.verb || '들고 있는'} 「{carry.label}」은 공간 이동 또는 다음 단계 시작 직전에 안전하게 내려놓습니다.</div>}
 
+          <div className="milestone-start-note"><b>다음</b><span>강조된 버튼을 누르면 목적지까지 안내하고, 도착 후 해야 할 일을 바로 보여드려요.</span></div>
+
           <div className="actions milestone-confirm-actions">
             <button onClick={onCancel}>취소</button>
-            <button ref={primaryRef} className="primary" onClick={onConfirm}>확인 · {milestone.actionLabel}</button>
+            <button ref={primaryRef} className="primary milestone-guide-start" onClick={onConfirm}>안내 시작 · {milestone.actionLabel}</button>
           </div>
         </div>
       </section>

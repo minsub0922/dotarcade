@@ -103,7 +103,8 @@ test('the complete todo list always exposes the six requested activities in step
     STUDIO_TODO.IMPROVE_GAME
   ])
   assert.deepEqual(todos.map(item => item.step), ['1/6', '2/6', '3/6', '4/6', '5/6', '6/6'])
-  assert.ok(todos.every(item => item.confirmTitle && item.destination && item.actionLabel && item.route))
+  assert.ok(todos.every(item => item.confirmTitle && item.destination && item.actionLabel && item.route && item.guide))
+  assert.match(todos[0].guide, /E.*F/)
 })
 
 test('optional earlier activities do not lock other playable unfinished activities', () => {

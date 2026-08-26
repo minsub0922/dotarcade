@@ -211,7 +211,7 @@ function ReferenceThumb({ item, manualOnly }) {
   )
 }
 
-export default function ReferenceDiscovery({ reference }) {
+export default function ReferenceDiscovery({ reference, standalone = false }) {
   const [expanded, setExpanded] = useState(true)
   const status = reference?.status || 'pending'
   const stepIndex = STATUS_INDEX[status] ?? 0
@@ -235,28 +235,31 @@ export default function ReferenceDiscovery({ reference }) {
   const completed = Number(reference?.completedQueries) || 0
   const total = Number(reference?.totalQueries) || 0
   const catalogScreens = uiReferences.reduce((sum, item) => sum + (Number(item?.screenCount) || 0), 0)
+  const showDetails = standalone || expanded
 
   if (!reference?.enabled) return null
 
   return (
-    <section className={`reference-discovery status-${status} ${expanded ? 'expanded' : ''}`} aria-label="게임 레퍼런스 탐색">
-      <button
-        type="button"
-        className="reference-discovery-head"
-        aria-expanded={expanded}
-        onClick={() => setExpanded(value => !value)}
-      >
-        <span className="reference-radar" aria-hidden="true"><i /></span>
-        <span className="reference-head-copy">
-          <span><b>REFERENCE SCOUT</b><em>{status === 'fallback' ? 'FALLBACK' : status === 'error' ? 'ISSUE' : isComplete ? 'READY' : 'LIVE'}</em></span>
-          <small aria-live="polite">{STATUS_COPY[status] || '레퍼런스 탐색 중'}</small>
-        </span>
-        {status === 'searching' && total > 0 && <span className="reference-query-count">{completed}/{total}</span>}
-        {selected && <strong className="reference-selected-mini">{titleOf(selected)}</strong>}
-        <span className={`reference-chevron ${expanded ? 'open' : ''}`} aria-hidden="true">⌄</span>
-      </button>
+    <section className={`reference-discovery status-${status} ${showDetails ? 'expanded' : ''} ${standalone ? 'standalone' : ''}`} aria-label="게임 레퍼런스 탐색">
+      {!standalone && (
+        <button
+          type="button"
+          className="reference-discovery-head"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(value => !value)}
+        >
+          <span className="reference-radar" aria-hidden="true"><i /></span>
+          <span className="reference-head-copy">
+            <span><b>REFERENCE SCOUT</b><em>{status === 'fallback' ? 'FALLBACK' : status === 'error' ? 'ISSUE' : isComplete ? 'READY' : 'LIVE'}</em></span>
+            <small aria-live="polite">{STATUS_COPY[status] || '레퍼런스 탐색 중'}</small>
+          </span>
+          {status === 'searching' && total > 0 && <span className="reference-query-count">{completed}/{total}</span>}
+          {selected && <strong className="reference-selected-mini">{titleOf(selected)}</strong>}
+          <span className={`reference-chevron ${expanded ? 'open' : ''}`} aria-hidden="true">⌄</span>
+        </button>
+      )}
 
-      {expanded && (
+      {showDetails && (
         <div className="reference-discovery-body">
           <ol className="reference-steps" aria-label="탐색 진행 단계">
             {STEPS.map(([number, label], index) => {

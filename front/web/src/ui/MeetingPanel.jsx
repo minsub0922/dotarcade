@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../state/store.js'
 import { TEAM, PLAYER } from '../data/personas.js'
-import { PHASES } from '../meeting/prompts.js'
 import { isMeetingActive, isMeetingPaused, isMeetingTransitioning, meetingStatusCopy } from '../meeting/status.js'
 import Markdown from './Markdown.jsx'
 import PhaseStepper from './PhaseStepper.jsx'
@@ -17,6 +16,18 @@ const checkpointTime = value => {
   const time = new Date(value)
   return Number.isNaN(time.getTime()) ? '' : time.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
+
+const referenceStatusLabel = status => ({
+  pending: '준비 중',
+  planning: '키워드 설계 중',
+  searching: '병렬 검색 중',
+  selecting: '타겟 선정 중',
+  'ui-search': 'UI 탐색 중',
+  contracting: '제작 계약 중',
+  done: '레퍼런스 준비 완료',
+  fallback: '대체 출처 준비 완료',
+  error: '확인 필요'
+}[status] || '탐색 중')
 
 const interventionDraftKey = id => `dotcade-meeting-intervention-${id}`
 
@@ -44,8 +55,15 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
   const [intervention, setIntervention] = useState('')
   const [meetingAction, setMeetingAction] = useState('')
   const [actionError, setActionError] = useState('')
-  const [confirmCancel, setConfirmCancel] = useState(false)
+  const [referenceOpen, setReferenceOpen] = useState(false)
   const feedRef = useRef(null)
+  const qaPreviewRef = useRef(null)
+  const referenceTriggerRef = useRef(null)
+  const referenceCloseRef = useRef(null)
+  const referenceWasOpenRef = useRef(false)
+  const reference = meeting?.research?.reference || meeting?.referenceResearch || meeting?.referenceDiscovery
+  const referenceAvailable = !!(meeting?.research || reference?.enabled)
+  const scoutVisible = referenceOpen && referenceAvailable
 
   useEffect(() => { if (tab === 'feed') feedRef.current?.scrollTo(0, 1e9) }, [meeting?.transcript?.length, tab])
   useEffect(() => {
@@ -58,17 +76,53 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
     setIntervention(readInterventionDraft(meeting?.id))
     setMeetingAction('')
     setActionError('')
-    setConfirmCancel(false)
+    setReferenceOpen(false)
   }, [meeting?.id])
   useEffect(() => {
     writeInterventionDraft(meeting?.id, intervention)
   }, [meeting?.id, intervention])
   useEffect(() => {
-    if (!isMeetingActive(meeting)) setConfirmCancel(false)
-  }, [meeting?.status])
+    if (scoutVisible || tab !== 'feed') return
+    const frame = requestAnimationFrame(() => feedRef.current?.scrollTo(0, 1e9))
+    return () => cancelAnimationFrame(frame)
+  }, [scoutVisible, tab])
+  useEffect(() => {
+    if (!meeting?.qaPreview) return
+    if (tab !== 'feed') {
+      setTab('feed')
+      return
+    }
+    const frame = requestAnimationFrame(() => {
+      const feed = feedRef.current
+      const preview = qaPreviewRef.current
+      if (feed && preview) feed.scrollTo({ top: Math.max(0, preview.offsetTop - feed.offsetTop - 10), behavior: 'smooth' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [meeting?.qaPreview, meeting?.qaNonce, tab])
+  useEffect(() => {
+    let frame
+    if (scoutVisible) {
+      referenceWasOpenRef.current = true
+      frame = requestAnimationFrame(() => referenceCloseRef.current?.focus())
+    } else if (referenceWasOpenRef.current) {
+      referenceWasOpenRef.current = false
+      frame = requestAnimationFrame(() => referenceTriggerRef.current?.focus())
+    }
+    return () => frame && cancelAnimationFrame(frame)
+  }, [scoutVisible])
+  useEffect(() => {
+    if (!scoutVisible) return
+    const closeOnEscape = event => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setReferenceOpen(false)
+    }
+    document.addEventListener('keydown', closeOnEscape, true)
+    return () => document.removeEventListener('keydown', closeOnEscape, true)
+  }, [scoutVisible])
 
   if (!meeting) return null
-  const phaseIdx = PHASES.findIndex(p => p.key === meeting.phase)
   const done = meeting.status === 'done'
   const stopped = meeting.status === 'cancelled'
   const active = isMeetingActive(meeting)
@@ -79,15 +133,21 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
   const checkpointRevision = checkpoint?.revision ?? meeting.checkpointRevision ?? meeting.revision ?? null
   const checkpointSavedAt = checkpoint?.savedAt || checkpoint?.updatedAt || checkpoint?.createdAt || meeting.checkpointedAt || meeting.savedAt
   const checkpointSavedLabel = checkpointTime(checkpointSavedAt)
-  const checkpointError = meeting.checkpointError || checkpoint?.error || actionError
+  const checkpointError = meeting.checkpointError || checkpoint?.error
+  const statusError = meeting.status === 'error' ? meeting.error : null
+  const runtimeError = checkpointError || actionError || statusError
+  const runtimeErrorLabel = checkpointError ? '체크포인트 오류' : actionError ? '회의 제어 오류' : '회의 오류'
   const actionBusy = !!meetingAction || transitioning
   const interventionText = intervention.trim()
   const resultGame = done && games.find(g => g.id === meeting.resultGameId)
+  const qaActive = active && meeting.phase === 'qa'
+  const qaSkipPending = !!meeting.qaSkipPending || meetingAction === 'skipQa'
+  const qaSkippable = qaActive && meeting.qaSkippable !== false
+  const qaCanSkip = qaSkippable && ['running', 'paused', 'error'].includes(meeting.status) && !actionBusy && !qaSkipPending
   const researchMembers = Object.values(meeting.research?.members || {})
   const ragDone = researchMembers.filter(x => x.rag === 'done').length
   const webTargets = researchMembers.filter(x => x.web !== 'skipped')
   const webDone = webTargets.filter(x => ['done', 'fallback', 'unavailable'].includes(x.web)).length
-  const reference = meeting.research?.reference || meeting.referenceResearch || meeting.referenceDiscovery
   const directionSeconds = meeting.directionGate
     ? Math.max(0, Math.ceil((meeting.directionGate.until - clock) / 1000))
     : 0
@@ -122,8 +182,8 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
     return invokeMeetingAction('resume', () => meet?.resume?.(text || undefined), { clearDraft: !!text })
   }
 
-  function cancelMeeting() {
-    return invokeMeetingAction('cancel', () => meet?.cancel?.())
+  function skipQa() {
+    return invokeMeetingAction('skipQa', () => meet?.skipQa?.())
   }
 
   function primaryInterventionAction() {
@@ -132,43 +192,46 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
   }
 
   return (
-    <aside className="panel side wide">
+    <aside className="panel side wide meeting-panel">
       <div className="panel-head">
-        <div style={{ flex: 1 }}>
-          <b>📋 BMAD 회의</b> <span className="muted">{meeting.agenda}</span>
+        <div className="meeting-panel-title">
+          <b>📋 BMAD 회의</b>
+          <span className="muted" title={meeting.agenda}>{meeting.agenda}</span>
         </div>
+        {referenceAvailable && (
+          <button
+            type="button"
+            ref={referenceTriggerRef}
+            className={`reference-scout-trigger status-${reference?.status || 'pending'}`}
+            onClick={() => setReferenceOpen(value => !value)}
+            aria-expanded={scoutVisible}
+            aria-controls="meeting-reference-scout"
+          >
+            <span>🔎 레퍼런스 스카우트</span>
+            <small>{referenceStatusLabel(reference?.status)}{researchMembers.length ? ` · RAG ${ragDone}/${researchMembers.length}` : ''}</small>
+          </button>
+        )}
         <button className="x" onClick={closePanel} title="접기 (회의는 계속 진행됩니다)">▁</button>
       </div>
-      <PhaseStepper phase={meeting.phase} status={meeting.status} />
+      <div
+        className="meeting-panel-content"
+        aria-hidden={scoutVisible || undefined}
+        {...(scoutVisible ? { inert: '' } : {})}
+      >
+        <PhaseStepper phase={meeting.phase} status={meeting.status} />
 
-      {(active || checkpointSavedAt || checkpointError) && (
+      {(active || checkpointSavedAt || runtimeError) && (
         <div className={`meeting-runtime ${runtime.tone}`} role="status" aria-live="polite">
-          <span className="meeting-runtime-state"><i aria-hidden="true" /><b>{runtime.label}</b></span>
+          <span className="meeting-runtime-state"><em>STATE</em><i aria-hidden="true" /><b>{runtime.label}</b></span>
           <span className="checkpoint-meta">
-            {checkpointError
-              ? <span className="checkpoint-error">⚠ 체크포인트 오류 · {String(checkpointError?.message || checkpointError)}</span>
+            {runtimeError
+              ? <span className="checkpoint-error">⚠ {runtimeErrorLabel} · {String(runtimeError?.message || runtimeError)}</span>
               : checkpointSavedLabel
                 ? <>✓ 전체 컨텍스트 저장 {checkpointSavedLabel}{checkpointRevision != null ? ` · r${checkpointRevision}` : ''}</>
                 : active ? '첫 체크포인트 준비 중…' : '저장된 체크포인트 없음'}
           </span>
         </div>
       )}
-
-      {meeting.research && (
-        <div className="research-brief">
-          <div className="research-brief-head">
-            <b>🔎 리서치 레이더</b>
-            <span className="tiny muted">RAG {ragDone}/{researchMembers.length} · 검색 {webDone}/{webTargets.length}</span>
-          </div>
-          <div className="research-keywords" aria-label="주요 기술 키워드">
-            <span className="research-keyword-label">TECH</span>
-            {(meeting.research.keywords || []).map(k => <span className="chip" key={k}>#{k}</span>)}
-            {!meeting.research.keywords?.length && <span className="tiny muted">핵심 키워드 수집 중…</span>}
-          </div>
-        </div>
-      )}
-
-      <ReferenceDiscovery reference={reference} />
 
       {meeting.directionGate && (
         <section className="direction-gate">
@@ -204,12 +267,25 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
       )}
 
       <div className="tabs">
-        <button className={tab === 'feed' ? 'on' : ''} onClick={() => setTab('feed')}>회의록</button>
-        <button className={tab === 'prd' ? 'on' : ''} onClick={() => setTab('prd')} disabled={!meeting.artifacts.prd}>PRD</button>
-        <button className={tab === 'design' ? 'on' : ''} onClick={() => setTab('design')} disabled={!meeting.artifacts.design}>디자인</button>
-        <button className={tab === 'arch' ? 'on' : ''} onClick={() => setTab('arch')} disabled={!meeting.artifacts.arch}>설계</button>
-        <button className={tab === 'code' ? 'on' : ''} onClick={() => setTab('code')} disabled={!meeting.artifacts.code}>코드</button>
+        <button className={tab === 'feed' ? 'on' : ''} onClick={() => setTab('feed')}>💬 회의록 · 대화</button>
+        <button className={tab === 'prd' ? 'on' : ''} onClick={() => setTab('prd')} disabled={!meeting.artifacts.prd || meeting.qaPreview}>PRD</button>
+        <button className={tab === 'design' ? 'on' : ''} onClick={() => setTab('design')} disabled={!meeting.artifacts.design || meeting.qaPreview}>디자인</button>
+        <button className={tab === 'arch' ? 'on' : ''} onClick={() => setTab('arch')} disabled={!meeting.artifacts.arch || meeting.qaPreview}>설계</button>
+        <button className={tab === 'code' ? 'on' : ''} onClick={() => setTab('code')} disabled={!meeting.artifacts.code || meeting.qaPreview}>코드</button>
       </div>
+
+      {qaActive && (
+        <section className={`qa-fast-track ${qaSkipPending ? 'pending' : ''}`} aria-label="QA 빠른 배포 선택">
+          <span className="qa-fast-icon" aria-hidden="true">🧪</span>
+          <div>
+            <b>{meeting.qaActivity === 'repairing' ? 'QA 오류 수리 중' : '자동 QA 진행 중'}</b>
+            <small>완료를 기다리거나, 미검증 상태를 기록하고 바로 릴리즈할 수 있습니다.</small>
+          </div>
+          <button type="button" className="qa-skip-button" onClick={skipQa} disabled={!qaCanSkip}>
+            {qaSkipPending ? '빠른 배포 준비 중…' : '⚡ QA 스킵 · 빠른 배포'}
+          </button>
+        </section>
+      )}
 
       {tab === 'feed' ? (
         <div className="feed" ref={feedRef}>
@@ -230,8 +306,11 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
             )
           })}
           {meeting.qaPreview && (
-            <div className="qa-preview">
-              <div className="tiny muted">🧪 QA 봇 플레이 라이브</div>
+            <div className="qa-preview" ref={qaPreviewRef}>
+              <div className="qa-preview-head">
+                <span><b>QA 봇 플레이 라이브</b><small>생성된 게임을 자동 조작하며 렌더링과 입력 반응을 확인합니다.</small></span>
+                <em><i /> LIVE</em>
+              </div>
               <div id="qa-preview-slot" key={meeting.qaNonce} />
             </div>
           )}
@@ -296,6 +375,24 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
         </section>
       )}
 
+      {done && resultGame && (
+        <section className="release-ready" aria-live="polite">
+          <span className="release-ready-icon" aria-hidden="true">🚀</span>
+          <div className="release-ready-copy">
+            <small>{meeting.upgrade ? 'NEW VERSION READY' : 'NEW GAME READY'}</small>
+            <b>{resultGame.emoji} {resultGame.title} 제작 완료</b>
+            <span>다음 단계로 오락실에 배포하고 AI 손님 20명의 플레이 시뮬레이션을 시작하세요.</span>
+          </div>
+          <div className="release-ready-actions">
+            <button className="deploy-primary" onClick={() => onDeploy(resultGame)}>
+              {meeting.upgrade ? '🚀 업데이트 배포하기' : '🚀 신규 게임 배포하기'}
+              <small>배포 시뮬레이션으로 이동</small>
+            </button>
+            <button onClick={() => onPlay(resultGame.id)}>▶ 먼저 플레이</button>
+          </div>
+        </section>
+      )}
+
       {done && meeting.reward && (
         <div className="studio-reward">
           <span className="reward-burst">🎁</span>
@@ -306,25 +403,38 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
         </div>
       )}
 
-      <div className="panel-foot">
-        {active && !confirmCancel && <button className="danger ghost-danger" onClick={() => setConfirmCancel(true)} disabled={meetingAction === 'cancel'}>회의 종료…</button>}
-        {active && confirmCancel && (
-          <div className="cancel-confirm" role="alert">
-            <span>체크포인트를 남기고 이 회의를 영구 종료할까요?</span>
-            <button onClick={() => setConfirmCancel(false)} disabled={meetingAction === 'cancel'}>계속 진행</button>
-            <button className="danger" onClick={cancelMeeting} disabled={meetingAction === 'cancel'}>{meetingAction === 'cancel' ? '종료 중…' : '회의 종료'}</button>
-          </div>
-        )}
-        {done && resultGame && (
-          <>
-            <button className="primary" onClick={() => onPlay(resultGame.id)}>▶ {resultGame.emoji} {resultGame.title} 플레이</button>
-            <button className="accent" onClick={() => onDeploy(resultGame)}>🕹️ 오락실 배포 & 시뮬레이션</button>
-          </>
-        )}
-        {meeting.status === 'error' && <span className="err">⚠️ {meeting.error}</span>}
+      {(done || stopped) && <div className="panel-foot">
         {meeting.status === 'cancelled' && <span className="muted">회의가 중단되었습니다.</span>}
         {(done || stopped) && <button onClick={() => { useStore.getState().setMeeting(null); closePanel() }}>닫기</button>}
+      </div>}
       </div>
+
+      {scoutVisible && (
+        <section id="meeting-reference-scout" className="meeting-scout-layer" role="dialog" aria-labelledby="meeting-reference-scout-title">
+          <header className="meeting-scout-head">
+            <div>
+              <small>REFERENCE SCOUT</small>
+              <b id="meeting-reference-scout-title">🔎 회의 레퍼런스 스카우트</b>
+            </div>
+            <span className={`scout-status status-${reference?.status || 'pending'}`} aria-live="polite">{referenceStatusLabel(reference?.status)}</span>
+            <button ref={referenceCloseRef} type="button" className="x" onClick={() => setReferenceOpen(false)} aria-label="레퍼런스 스카우트 닫기">✕</button>
+          </header>
+          {meeting.research && (
+            <div className="research-brief">
+              <div className="research-brief-head">
+                <b>리서치 레이더</b>
+                <span className="tiny muted">RAG {ragDone}/{researchMembers.length} · 검색 {webDone}/{webTargets.length}</span>
+              </div>
+              <div className="research-keywords" aria-label="주요 기술 키워드">
+                <span className="research-keyword-label">TECH</span>
+                {(meeting.research.keywords || []).map(k => <span className="chip" key={k}>#{k}</span>)}
+                {!meeting.research.keywords?.length && <span className="tiny muted">핵심 키워드 수집 중…</span>}
+              </div>
+            </div>
+          )}
+          <ReferenceDiscovery reference={reference} standalone />
+        </section>
+      )}
     </aside>
   )
 }
