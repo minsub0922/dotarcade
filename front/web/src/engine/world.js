@@ -596,15 +596,26 @@ export class Engine {
 
   _seatEntity(e, seat, { source = 'scripted', immediate = false } = {}) {
     if (!e || !seat?.anchor) return false
+    const currentSeatId = e.seatMotion?.seatId || e.meta?.seat?.id
+    const sameActiveSeat = currentSeatId === seat.id && (e.seatMotion?.mix || 0) > 0
     e.x = seat.anchor.x
     e.y = seat.anchor.y
     e.dir = seat.face || 'down'
     e.path = []
     e.moving = false
     const resolveImmediately = immediate || this.reduceMotion
-    e.seatMotion = resolveImmediately
-      ? createSeatMotionState({ phase: SEAT_PHASES.SEATED, seat })
-      : advanceSeatMotion(createSeatMotionState(), { actor: e, seat, near: true, deltaMs: 0 })
+    if (resolveImmediately) {
+      e.seatMotion = createSeatMotionState({ phase: SEAT_PHASES.SEATED, seat })
+    } else if (sameActiveSeat) {
+      // Repeated RETURN_HOME/WORK plans may call sit while the actor is already
+      // in this chair. Preserve the current mix instead of popping upright and
+      // replaying the whole transition every time the planner checks in.
+      e.seatMotion = e.seatMotion.phase === SEAT_PHASES.EXITING
+        ? advanceSeatMotion(e.seatMotion, { actor: e, seat, near: true, deltaMs: 1 })
+        : { ...e.seatMotion, facing: seat.face || e.seatMotion.facing, anchor: { ...seat.anchor } }
+    } else {
+      e.seatMotion = advanceSeatMotion(createSeatMotionState(), { actor: e, seat, near: true, deltaMs: 0 })
+    }
     e.sitting = resolveImmediately || seatPoseLayout(e.seatMotion).isSeated
     e.seatIdleMs = 0
     e.seatCandidateId = seat.id
@@ -619,6 +630,7 @@ export class Engine {
       source,
       occluderId: seat.occluderId || null
     }
+    delete e.meta.seatExit
     delete e.meta.autonomyPath
     return true
   }
@@ -640,8 +652,10 @@ export class Engine {
     e.seatBlockedUntil = Math.max(e.seatBlockedUntil || 0, this.t + Math.max(0, cooldownMs))
     if (e.meta.seat) {
       e.meta.lastSeatExit = { id: e.meta.seat.id, reason, at: this.t }
+      if (!immediate && (e.seatMotion?.mix || 0) > 0) e.meta.seatExit = { ...e.meta.seat }
       delete e.meta.seat
     }
+    if (immediate || e.seatMotion?.phase === SEAT_PHASES.STANDING) delete e.meta.seatExit
     return hadSeat
   }
 
@@ -656,6 +670,23 @@ export class Engine {
       if (seatId && ((e.seatMotion?.mix || 0) > 0 || e.sitting)) occupancy.set(seatId, e.id)
     }
     return occupancy
+  }
+
+  _moveBesideSeat(e, seat) {
+    if (!e || !seat?.anchor) return false
+    const offsets = [[0, 34], [-34, 26], [34, 26], [-38, 0], [38, 0]]
+    const others = [this.player, ...this.agents.values()].filter(other => other !== e && other.visible !== false)
+    const candidates = offsets.map(([dx, dy]) => ({ x: seat.anchor.x + dx, y: seat.anchor.y + dy }))
+    const destination = candidates.find(point => this._walkable(point.x, point.y)
+      && others.every(other => Math.hypot(other.x - point.x, other.y - point.y) > 24))
+      || candidates.find(point => this._walkable(point.x, point.y))
+    if (!destination) return false
+    e.x = destination.x
+    e.y = destination.y
+    e.dir = 'down'
+    e.path = []
+    e.moving = false
+    return true
   }
 
   _ownerNeedsSeat(seat, actor) {
@@ -700,6 +731,10 @@ export class Engine {
         })
       }))
       .filter(({ seat, proximity }) => {
+        // Team members own one authored workstation each. Allowing them to
+        // claim another desk creates a later owner-return collision; the
+        // player may still try any genuinely free chair.
+        if (e !== this.player && seat.ownerId !== e.id) return false
         const occupiedBy = occupancy.get(seat.id)
         if (occupiedBy && occupiedBy !== e.id) return false
         if (seat.id === e.seatMotion?.seatId) return proximity.withinRelease
@@ -727,10 +762,15 @@ export class Engine {
         || e.meta?.activity === 'socialize'
         || (e.meta?.socialLock?.until || 0) > this.t
       if (socialActive && this._hasSeatState(e)) {
-        // Chat can also be initiated by the React layer, bypassing the world
-        // interaction helpers. Reconcile the chair claim here so a scripted
-        // desk sitter never rotates sideways through the desk while talking.
-        this._standEntity(e, 'social')
+        // The React chat panel can set `chatting` without routing the actor to
+        // a safe standing tile. Keep an already seated teammate in the chair
+        // (and restore the authored facing) rather than standing them inside
+        // the desk. Planner-driven SOCIALIZE calls _standEntity before moving.
+        if (e.meta?.seat) {
+          e.path = []
+          e.moving = false
+          e.dir = e.meta.seat.face || e.dir
+        }
         continue
       }
       // Scripted/home/meeting seats own their target. Their transition is
@@ -801,7 +841,10 @@ export class Engine {
           deltaMs: dt,
           reduceMotion: this.reduceMotion
         })
-        if (e.seatMotion.phase === SEAT_PHASES.STANDING) e.sitting = false
+        if (e.seatMotion.phase === SEAT_PHASES.STANDING) {
+          e.sitting = false
+          delete e.meta.seatExit
+        }
         continue
       }
       const seatMeta = e.meta?.seat
@@ -854,6 +897,7 @@ export class Engine {
   }
   sit(id, tile, face, options = {}) {
     const e = this._seatActorById(id); if (!e) return false
+    if (e !== this.player && !e.home) return false
     const registered = this._seatForTile(tile)
     const anchor = { x: tile[0] * T + T / 2, y: tile[1] * T + T - 8 }
     const seat = registered || {
@@ -869,6 +913,18 @@ export class Engine {
       occluderId: null
     }
     seat.face = face || seat.face || 'down'
+    if (registered) {
+      const occupiedBy = this._seatOccupancy().get(registered.id)
+      if (occupiedBy && occupiedBy !== e.id) {
+        // The authored owner wins their desk when returning from a goal. Move
+        // a temporary player sitter to the clear aisle before seating the
+        // owner; non-owner scripted claims are rejected without overlapping.
+        if (registered.ownerId !== e.id) return false
+        const occupant = this._seatActorById(occupiedBy)
+        this._standEntity(occupant, 'owner-return', { immediate: true, cooldownMs: 900 })
+        this._moveBesideSeat(occupant, registered)
+      }
+    }
     this._seatEntity(e, seat, {
       source: options.source || 'scripted',
       immediate: options.immediate === true
@@ -1544,8 +1600,10 @@ export class Engine {
 
   _faceEachOther(a, b) {
     const dx = b.x - a.x, dy = b.y - a.y
-    a.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up')
-    b.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'left' : 'right') : (dy > 0 ? 'up' : 'down')
+    if (a.meta?.seat) a.dir = a.meta.seat.face || a.dir
+    else a.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up')
+    if (b.meta?.seat) b.dir = b.meta.seat.face || b.dir
+    else b.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'left' : 'right') : (dy > 0 ? 'up' : 'down')
   }
 
   _updateSocialAction(e, step) {
@@ -1563,7 +1621,10 @@ export class Engine {
       e.meta.activity = 'socialize'
       target.meta.activity = 'socialize'
       this._standEntity(e, 'socialize')
-      this._standEntity(target, 'socialize')
+      // A target already seated at an authored desk can talk from the chair.
+      // Standing it at the same anchor would place a full-height sprite inside
+      // the desk; moving social initiators still stand before routing here.
+      if (!target.meta?.seat) this._standEntity(target, 'socialize')
       if (target !== this.player && target.meta.autonomyPath) { target.path = []; delete target.meta.autonomyPath }
       this._faceEachOther(e, target)
       this.avatarEmotions.cue(e, 'social-start', { now: this.t, source: 'social-start' })
@@ -2336,8 +2397,10 @@ export class Engine {
   }
 
   _drawSeatFront(e, background) {
-    if (!background || !e?.sitting || !e.meta?.seat?.occluderId || this.map !== 'office') return
-    const occluder = layoutOccluders(this.maps.office).find(item => item.id === e.meta.seat.occluderId)
+    const seatPose = seatPoseLayout(e?.seatMotion, { facing: e?.dir })
+    const seatMeta = e?.meta?.seat || e?.meta?.seatExit
+    if (!background || !seatPose.active || !seatMeta?.occluderId || this.map !== 'office') return
+    const occluder = layoutOccluders(this.maps.office).find(item => item.id === seatMeta.occluderId)
     if (!occluder) return
     const [x, y, width, height] = occluder.source
     const frontY = Math.max(y, Math.min(y + height, occluder.baseline))

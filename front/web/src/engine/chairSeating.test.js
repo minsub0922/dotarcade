@@ -106,6 +106,53 @@ test('owner priority and occupancy prevent two actors claiming one desk', () => 
   assert.equal(engine.getChairSeatingState().chairs.find(chair => chair.id === 'desk-pm').occupiedBy, 'pm')
 })
 
+test('team members only auto-seat at home and an owner safely reclaims a player-occupied desk', () => {
+  const { engine } = createEngine()
+  const pm = engine.addAgent('pm', 'pm', OFFICE_SEATS.pm.desk, { map: 'office', home: OFFICE_SEATS.pm, autonomy: false })
+  atDesk(pm, OFFICE_SEATS.dev1.desk)
+  advance(engine, 24, 20)
+  assert.equal(pm.sitting, false, 'a teammate must not claim another role desk')
+
+  atDesk(engine.player, OFFICE_SEATS.dev1.desk)
+  advance(engine, 24, 20)
+  assert.equal(engine.player.meta.seat?.id, 'desk-dev1')
+
+  const dev1 = engine.addAgent('dev1', 'dev1', OFFICE_SEATS.dev1.desk, { map: 'office', home: OFFICE_SEATS.dev1, autonomy: false })
+  assert.equal(engine.sit('dev1', OFFICE_SEATS.dev1.desk, 'up', { immediate: true }), true)
+  assert.equal(dev1.meta.seat?.id, 'desk-dev1')
+  assert.equal(engine.player.meta.seat, undefined)
+  assert.ok(Math.hypot(engine.player.x - dev1.x, engine.player.y - dev1.y) > 24, 'the displaced player moves into a clear aisle')
+  assert.equal(engine.getChairSeatingState().chairs.find(chair => chair.id === 'desk-dev1').occupiedBy, 'dev1')
+})
+
+test('repeating sit for the same chair is idempotent instead of replaying entry', () => {
+  const { engine } = createEngine()
+  const pm = engine.addAgent('pm', 'pm', OFFICE_SEATS.pm.desk, { map: 'office', home: OFFICE_SEATS.pm, autonomy: false })
+  engine.sit('pm', OFFICE_SEATS.pm.desk, 'up', { immediate: true })
+  assert.deepEqual([pm.seatMotion.phase, pm.seatMotion.mix, pm.sitting], [SEAT_PHASES.SEATED, 1, true])
+
+  engine.sit('pm', OFFICE_SEATS.pm.desk, 'up')
+  assert.deepEqual([pm.seatMotion.phase, pm.seatMotion.mix, pm.sitting], [SEAT_PHASES.SEATED, 1, true])
+})
+
+test('visitors cannot sit and autonomous conversations keep seated targets grounded', () => {
+  const { engine } = createEngine()
+  const visitor = engine.addAgent('v01', 'v01', [12, 10], { map: 'office', autonomy: false })
+  assert.equal(engine.sit(visitor.id, OFFICE_SEATS.pm.desk, 'up'), false)
+  assert.equal(visitor.meta.seat, undefined)
+
+  const pm = engine.addAgent('pm', 'pm', OFFICE_SEATS.pm.desk, { map: 'office', home: OFFICE_SEATS.pm, autonomy: false })
+  const dev1 = engine.addAgent('dev1', 'dev1', OFFICE_SEATS.dev1.desk, { map: 'office', home: OFFICE_SEATS.dev1, autonomy: true })
+  engine.sit('pm', OFFICE_SEATS.pm.desk, 'up', { immediate: true })
+  dev1.x = pm.x - 48
+  dev1.y = pm.y
+
+  assert.equal(engine._updateSocialAction(dev1, { targetId: 'pm', maxTurns: 2 }), 'running')
+  assert.equal(pm.sitting, true)
+  assert.equal(pm.meta.seat?.id, 'desk-pm')
+  assert.equal(pm.dir, 'up')
+})
+
 test('held, mounted, social and reaction states block capture while handheld play remains allowed', () => {
   const { engine } = createEngine()
   atDesk(engine.player, OFFICE_SEATS.player.desk)
@@ -126,8 +173,8 @@ test('held, mounted, social and reaction states block capture while handheld pla
   assert.equal(engine.player.sitting, true, 'portable play is compatible with a desk chair')
   engine.player.meta.chatting = true
   advance(engine, 1, 20)
-  assert.equal(engine.player.sitting, false, 'a chat started outside the engine still releases the chair')
-  assert.equal(engine.player.meta.seat, undefined)
+  assert.equal(engine.player.sitting, true, 'an external chat keeps a seated actor safely inside the chair')
+  assert.equal(engine.player.dir, 'up', 'chat UI cannot rotate a desk sitter through the furniture')
   delete engine.player.meta.chatting
 
   const pm = engine.addAgent('pm', 'pm', OFFICE_SEATS.pm.desk, { map: 'office', home: OFFICE_SEATS.pm, autonomy: false })
@@ -191,4 +238,16 @@ test('seated desk repaint uses only the measured lower front strip', () => {
 
   engine._drawSeatFront(engine.player, background)
   assert.deepEqual(calls, [[background, 1134, 260, 162, 30, 1134, 260, 162, 30]])
+
+  engine.stand('player', 'movement-input')
+  assert.equal(engine.player.seatMotion.phase, SEAT_PHASES.EXITING)
+  assert.equal(engine.player.meta.seat, undefined)
+  assert.equal(engine.player.meta.seatExit?.occluderId, 'desk-player-front')
+  engine._drawSeatFront(engine.player, background)
+  assert.equal(calls.length, 2, 'the furniture lip stays above the avatar throughout exit')
+
+  engine.player.x += 80
+  advance(engine, 20, 20)
+  assert.equal(engine.player.seatMotion.phase, SEAT_PHASES.STANDING)
+  assert.equal(engine.player.meta.seatExit, undefined)
 })
