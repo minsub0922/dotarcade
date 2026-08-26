@@ -13,6 +13,36 @@ const makeEngine = () => new Engine(
   }
 )
 
+test('world loads matching stills and walk sheets under one cache-busting build id', async () => {
+  const sources = []
+  const OriginalImage = globalThis.Image
+  globalThis.Image = class {
+    set src(value) {
+      sources.push(value)
+      queueMicrotask(() => this.onload?.())
+    }
+  }
+  try {
+    const engine = new Engine(
+      { getContext: () => ({}) },
+      {
+        maps: {
+          office: { spawn: [2, 2], collision: [] },
+          arcade: { spawn: [2, 2], collision: [] }
+        },
+        walkManifest: { buildPixelSha256: 'canonical-v3' }
+      }
+    )
+    await engine.load(['v01'])
+    assert.ok(sources.includes('/assets/sprites_v2/v01/left.png?v=canonical-v3'))
+    assert.ok(sources.includes('/assets/sprites_v2/v01/right.png?v=canonical-v3'))
+    assert.ok(sources.includes('/assets/sprites_v2/v01/walk-sheet.png?v=canonical-v3'))
+  } finally {
+    if (OriginalImage === undefined) delete globalThis.Image
+    else globalThis.Image = OriginalImage
+  }
+})
+
 test('world samples actual displacement without changing collision or sort coordinates', () => {
   const engine = makeEngine()
   const player = engine.player
@@ -33,6 +63,22 @@ test('world samples actual displacement without changing collision or sort coord
   assert.equal(player.walkAnimation.teleported, true)
   assert.deepEqual(player.walkMotion.pose, NEUTRAL_AVATAR_WALK_POSE)
 })
+
+test('evaluation visitors face their actual horizontal route displacement', () => {
+  const engine = makeEngine()
+  const visitor = engine.addAgent('v01', 'v01', [2, 2], { map: 'office', autonomy: false })
+
+  const startX = visitor.x
+  visitor.path = [[3, 2]]
+  engine._moveAgentAlongPath(visitor, 1)
+  assert.ok(visitor.x > startX)
+  assert.equal(visitor.dir, 'right')
+
+  visitor.path = [[1, 2]]
+  engine._moveAgentAlongPath(visitor, 1)
+  assert.equal(visitor.dir, 'left')
+})
+
 test('world suppresses walking during reactions, seats, rides and reduced motion', () => {
   const scenarios = [
     (engine, entity) => { entity.sitting = true },

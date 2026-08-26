@@ -21,7 +21,7 @@ import {
 } from './handheldVisuals.js'
 import { NpcReactionSystem } from './npcReactions.js'
 import {
-  AVATAR_FRAME, DISMOUNT_DURATION, avatarDrawLayout, createWalkState, directionFromDelta,
+  AVATAR_FRAME, DISMOUNT_DURATION, avatarAssetUrl, avatarAssetVersion, avatarDrawLayout, createWalkState, directionFromDelta,
   isWalkSheetCompatible, rideDirectionFromDelta, rideLayout, rideTransitionPose, sampleRideCycle,
   sampleWalkFrame, sheetSource
 } from './avatarAnimation.js'
@@ -91,11 +91,15 @@ const stableUnit = value => {
 }
 
 export class Engine {
-  constructor(canvas, { maps, manifest, onHint, onInteract, onAgentEvent } = {}) {
+  constructor(canvas, { maps, manifest, walkManifest, onHint, onInteract, onAgentEvent } = {}) {
     this.cv = canvas
     this.ctx = canvas.getContext('2d')
     this.maps = maps
     this.manifest = manifest
+    // Walking atlases once shipped with their horizontal rows reversed. Keep
+    // every directional still and atlas on the same audited build even when a
+    // browser/CDN still owns a response for the old, unversioned public URL.
+    this.avatarAssetVersion = avatarAssetVersion(walkManifest)
     this.onHint = onHint || (() => {})
     this.onInteract = onInteract || (() => {})
     this.onAgentEvent = onAgentEvent || (() => {})
@@ -163,14 +167,14 @@ export class Engine {
         this.images[id] = {}
         for (const d of [...DIRS, 'face']) {
           jobs.push(
-            imgWithFallback(`/assets/sprites_v2/${id}/${d}.png`, `/assets/sprites/${id}/${d}.png`)
+            imgWithFallback(avatarAssetUrl(id, `${d}.png`, this.avatarAssetVersion), `/assets/sprites/${id}/${d}.png`)
               .then(i => { this.images[id][d] = i })
           )
         }
       }
       if (!(id in this.walkSheets)) {
         this.walkSheets[id] = null
-        jobs.push(img(`/assets/sprites_v2/${id}/walk-sheet.png`).then(i => { this.walkSheets[id] = i }))
+        jobs.push(img(avatarAssetUrl(id, 'walk-sheet.png', this.avatarAssetVersion)).then(i => { this.walkSheets[id] = i }))
       }
     }
     await Promise.all(jobs)

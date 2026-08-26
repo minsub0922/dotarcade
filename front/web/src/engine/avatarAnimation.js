@@ -12,6 +12,17 @@ export const WALK_SEQUENCE = Object.freeze(['idle', 'stepL', 'idle', 'stepR'])
 export const MOUNT_DURATION = 360
 export const DISMOUNT_DURATION = 420
 
+export function avatarAssetVersion(walkManifest) {
+  const value = walkManifest?.buildPixelSha256 || walkManifest?.buildSha256 || ''
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function avatarAssetUrl(spriteId, fileName, version = '') {
+  const path = `/assets/sprites_v2/${spriteId}/${fileName}`
+  const cleanVersion = typeof version === 'string' ? version.trim() : ''
+  return cleanVersion ? `${path}?v=${encodeURIComponent(cleanVersion)}` : path
+}
+
 export function directionFromDelta(dx, dy, fallback = 'down', epsilon = 0.02) {
   if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) < epsilon) return fallback
   return Math.abs(dx) > Math.abs(dy)

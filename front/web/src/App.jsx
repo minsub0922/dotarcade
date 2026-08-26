@@ -123,9 +123,10 @@ export default function App() {
     ;(async () => {
       // 프로필 쿠키 발급을 위해 config를 먼저 (첫 접속 시 브라우저별 DB 생성)
       const cfg = await api.config().catch(() => ({ llm: 'unknown', models: {}, offline: true }))
-      const [maps, manifest, gl] = await Promise.all([
+      const [maps, manifest, walkManifest, gl] = await Promise.all([
         fetch('/assets/maps.json').then(r => r.json()),
         fetch('/assets/sprites_v2/sprites.json').then(r => r.json()),
+        fetch('/assets/sprites_v2/walk.json', { cache: 'no-store' }).then(r => r.json()).catch(() => null),
         api.games().catch(() => ({ games: [] }))
       ])
       if (!alive) return
@@ -138,6 +139,7 @@ export default function App() {
       const eng = new Engine(cvRef.current, {
         maps: { office: maps.office, arcade: maps.arcade },
         manifest,
+        walkManifest,
         onHint: h => useStore.getState().setHint(h),
         onInteract: event => {
           if (event?.type === 'handheld' || event?.type === 'portable') interact(event)

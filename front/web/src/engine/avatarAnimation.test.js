@@ -5,6 +5,8 @@ import {
   WALK_SEQUENCE,
   DISMOUNT_DURATION,
   MOUNT_DURATION,
+  avatarAssetUrl,
+  avatarAssetVersion,
   avatarDrawLayout,
   createWalkState,
   directionFromDelta,
@@ -16,6 +18,17 @@ import {
   sampleWalkFrame,
   sheetSource
 } from './avatarAnimation.js'
+
+test('avatar asset URLs use the audited walk build to invalidate reversed legacy sheets', () => {
+  const version = avatarAssetVersion({ buildPixelSha256: 'current atlas/rows' })
+  assert.equal(version, 'current atlas/rows')
+  assert.equal(
+    avatarAssetUrl('v01', 'walk-sheet.png', version),
+    '/assets/sprites_v2/v01/walk-sheet.png?v=current%20atlas%2Frows'
+  )
+  assert.equal(avatarAssetUrl('v01', 'right.png'), '/assets/sprites_v2/v01/right.png')
+  assert.equal(avatarAssetVersion({ buildSha256: 'legacy-digest' }), 'legacy-digest')
+})
 
 test('movement deltas map to the direction the avatar actually travels', () => {
   assert.equal(directionFromDelta(8, 0), 'right')
