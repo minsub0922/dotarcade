@@ -1,39 +1,121 @@
 // DOTCADE — 캔버스 월드 엔진 (맵 렌더 · 이동 · 충돌 · 에이전트 · 말풍선)
 import { astar, randomWalkable } from './pathfind.js'
+import {
+  NPC_GOALS,
+  createAutonomyState,
+  configureAutonomyState,
+  ageDrives,
+  chooseUtilityGoal,
+  buildBoundedPlan,
+  consumeReplanBudget,
+  beginGoal,
+  advanceAction,
+  actionTimedOut,
+  sampleStuck,
+  finishGoal,
+  smoothTilePath,
+  autonomySnapshot
+} from './npcPlanner.js'
+import {
+  POCKET_STATION, isPocketStation, drawPocketStation, drawAgentHandheld
+} from './handheldVisuals.js'
+import { NpcReactionSystem } from './npcReactions.js'
+import {
+  AVATAR_FRAME, createWalkState, directionFromDelta, rideTransitionPose, sampleWalkFrame, sheetSource
+} from './avatarAnimation.js'
+import { AvatarEmotionSystem } from './avatarEmotions.js'
 
 const T = 48
+const WORLD_W = 1440
+const WORLD_H = 960
+const PLAYER_WALK_SPEED = 4.4
 const DIRS = ['down', 'left', 'right', 'up']
+const DIR_VECTOR = {
+  down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 }, up: { x: 0, y: -1 }
+}
+const WORLD_OBJECTS = [
+  POCKET_STATION,
+  { id: 'office-bike', map: 'office', kind: 'bicycle', label: '블루 자전거', tile: [21, 16], mountable: true, speed: 7.8, color: '#3f8fe5', dir: 'right' },
+  { id: 'office-scooter', map: 'office', kind: 'scooter', label: '퍼플 킥보드', tile: [25, 16], mountable: true, speed: 6.8, color: '#9a62e8', dir: 'left' },
+  { id: 'office-book-a', map: 'office', kind: 'book', label: '게임 디자인 책', tile: [9, 11], throwable: true, color: '#7d6df2', dir: 'right' },
+  { id: 'office-book-b', map: 'office', kind: 'book', label: '픽셀 아트 책', tile: [18, 16], throwable: true, color: '#ee6f91', dir: 'left' },
+  { id: 'office-trash', map: 'office', kind: 'trashbin', label: '가벼운 쓰레기통', tile: [27, 6], throwable: true, color: '#8dd8e8', dir: 'right' },
+  { id: 'arcade-bike', map: 'arcade', kind: 'bicycle', label: '네온 자전거', tile: [22, 15], mountable: true, speed: 7.8, color: '#ff68c4', dir: 'left' },
+  { id: 'arcade-scooter', map: 'arcade', kind: 'scooter', label: '블루 킥보드', tile: [20, 15], mountable: true, speed: 6.8, color: '#69dcff', dir: 'right' },
+  { id: 'arcade-book', map: 'arcade', kind: 'book', label: '공략 노트', tile: [17, 17], throwable: true, color: '#ffd35c', dir: 'right' },
+  { id: 'arcade-trash', map: 'arcade', kind: 'trashbin', label: '가벼운 쓰레기통', tile: [27, 17], throwable: true, color: '#a5b2c4', dir: 'left' }
+]
 const ARCADE_ZONE = [8, 6, 24, 15]   // 손님이 배회하는 오락실 구역
 const ARCADE_LINES = [
   '우와, 신작 나왔대!', '이 캐비닛 내 최고기록 있는데', '동전 챙겨왔지 ㅎㅎ', '오늘 신기록 간다',
   '🕹️ 이 게임 재밌겠다', '구경만 해도 재밌네', '한 판만 더...', '여기 분위기 좋다',
   '옆 사람 플레이 잘하네', '이따 랭킹 봐야지'
 ]
+const SOCIAL_OPENERS = [
+  '잠깐, 지금 뭐 하고 있어요?', '방금 아이디어 하나 떠올랐어요', '요즘 플레이 감각 어때요?',
+  '잠깐 쉬면서 얘기할래요?', '이 부분 같이 보면 재밌겠는데요'
+]
+const SOCIAL_REPLIES = [
+  '오, 그 관점은 좋네요!', '맞아요. 한 번 시험해보죠', '저도 비슷하게 느꼈어요',
+  '그럼 다음 판에 확인해봐요', '좋아요, 메모해둘게요'
+]
+const PLAYER_REPLIES = ['좋아, 계속 해보자!', '그거 괜찮은데?', '다음 테스트에 넣어보자', '응, 결과가 궁금하네']
+const PORTABLE_LINES = ['휴대기로 짧게 한 판!', '이 조작, 손에 착 붙는데?', '어디서든 테스트 가능 🎮', '한 판만 더 하고 갈게요']
+const WORK_LINES = ['좋아, 다시 집중!', '이 부분만 마무리하자', '진행 상황 업데이트 중...', '테스트 한 번 더 돌려볼게요']
+const stableUnit = value => {
+  let h = 2166136261
+  for (const ch of String(value)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) }
+  return (h >>> 0) / 4294967295
+}
 
 export class Engine {
-  constructor(canvas, { maps, manifest, onHint, onInteract }) {
+  constructor(canvas, { maps, manifest, onHint, onInteract, onAgentEvent } = {}) {
     this.cv = canvas
     this.ctx = canvas.getContext('2d')
     this.maps = maps
     this.manifest = manifest
     this.onHint = onHint || (() => {})
     this.onInteract = onInteract || (() => {})
-    this.images = {}       // sprite images: id -> {down,left,right,up,face}
+    this.onAgentEvent = onAgentEvent || (() => {})
+    this.images = {}       // idle/portrait images: id -> {down,left,right,up,face}
+    this.walkSheets = {}   // 144x288 sheet: 3 gait columns x 4 canonical directions
     this.mapImg = {}
     this.map = 'office'
     this.keys = new Set()
     this.player = this._ent('player', 'player', this.maps.office.spawn, 'down')
-    this.player.speed = 4.4
+    this.player.speed = PLAYER_WALK_SPEED
     this.agents = new Map()
     this.freezePlayer = false
     this.meetingMode = false
     this.simMode = false
     this.cabinetLabels = {}   // cabinetIdx -> {title, emoji, color, playerName}
     this.marquee = null       // 배포 중 게임 {title emoji color}
+    this.moveMarker = null    // 유저 클릭 이동 피드백
+    this.hoverTile = null     // 마우스가 가리키는 이동 가능 타일
+    this.interactionTarget = null
+    this.stepFx = []          // 발걸음 먼지/잔상
+    this.impactFx = []        // 던진 소품의 충돌/바운스 파티클
+    this.npcReactions = new NpcReactionSystem({ tileSize: T })
+    this.avatarEmotions = new AvatarEmotionSystem({
+      onEmotion: event => this.onAgentEvent(event)
+    })
+    this.worldObjects = this._createWorldObjects()
+    this.mountedVehicleId = null
+    this.heldObjectId = null
+    this.currentHint = null
+    this.camera = { x: this.player.x, y: this.player.y, zoom: 1 }
     this._newPaks = new Map() // gameId -> {until, kind:'new'|'up'} 신규/업그레이드 게임팩 하이라이트
+    this._motionMedia = typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null
+    this.reduceMotion = !!this._motionMedia?.matches
+    this._onMotionChange = e => { this.reduceMotion = !!e.matches }
+    this._motionMedia?.addEventListener?.('change', this._onMotionChange)
     this._raf = 0
     this._last = 0
     this._hintKey = ''
+    this._assignmentSeq = 0
+    this._sentenceCooldowns = new Map()
     this.t = 0
   }
 
@@ -41,47 +123,265 @@ export class Engine {
   async load(spriteIds) {
     const jobs = []
     const img = src => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src })
+    const imgWithFallback = async (primary, fallback) => (await img(primary)) || img(fallback)
     for (const m of ['office', 'arcade']) {
-      if (!this.mapImg[m]) jobs.push(img(`/assets/map_${m}.png`).then(i => { this.mapImg[m] = i }))
+      if (!this.mapImg[m]) jobs.push(
+        imgWithFallback(`/assets/map_${m}_v2.png`, `/assets/map_${m}.png`).then(i => { this.mapImg[m] = i })
+      )
     }
     for (const id of spriteIds) {
-      if (this.images[id]) continue
-      this.images[id] = {}
-      for (const d of [...DIRS, 'face']) {
-        jobs.push(img(`/assets/sprites/${id}/${d}.png`).then(i => { this.images[id][d] = i }))
+      if (!this.images[id]) {
+        this.images[id] = {}
+        for (const d of [...DIRS, 'face']) {
+          jobs.push(
+            imgWithFallback(`/assets/sprites_v2/${id}/${d}.png`, `/assets/sprites/${id}/${d}.png`)
+              .then(i => { this.images[id][d] = i })
+          )
+        }
+      }
+      if (!(id in this.walkSheets)) {
+        this.walkSheets[id] = null
+        jobs.push(img(`/assets/sprites_v2/${id}/walk-sheet.png`).then(i => { this.walkSheets[id] = i }))
       }
     }
     await Promise.all(jobs)
   }
 
   _ent(id, sprite, tile, dir = 'down') {
+    const x = tile[0] * T + T / 2
+    const y = tile[1] * T + T - 6
     return {
-      id, sprite, x: tile[0] * T + T / 2, y: tile[1] * T + T - 6, dir,
+      id, sprite, x, y, dir,
       path: [], speed: 3.0, moving: false, sitting: false,
+      stepAt: 0, stepSide: 0,
+      walkAnimation: createWalkState(x, y),
       bubble: null, cb: null, state: 'idle', idleT: 2000 + Math.random() * 4000,
-      label: '', color: '#fff', visible: true, home: null, meta: {}
+      label: '', color: '#fff', visible: true, home: null, meta: {}, autonomy: null
     }
   }
 
-  addAgent(id, sprite, tile, { label, color, home, map } = {}) {
+  _createWorldObjects() {
+    return WORLD_OBJECTS.map(spec => ({
+      ...spec,
+      x: spec.tile[0] * T + T / 2,
+      y: spec.tile[1] * T + T - 6,
+      z: 0, vx: 0, vy: 0, vz: 0, spin: 0,
+      held: false, mounted: false, bounces: 0, hitAt: 0
+    }))
+  }
+
+  addAgent(id, sprite, tile, { label, color, home, map, autonomy = 'auto', autonomyProfile, strategy } = {}) {
     const e = this._ent(id, sprite, tile)
     e.label = label || id; e.color = color || '#fff'; e.home = home || null
     e.map = map || this.map
     this.agents.set(id, e)
+    // Known team/visitor NPCs opt into autonomy by default. Scripted one-off
+    // entities stay deterministic unless the caller passes autonomy:true.
+    const autoEnabled = autonomy === true || (autonomy === 'auto' && (!!home || /^v\d+/i.test(id)))
+    if (autoEnabled) {
+      const profiles = autonomyProfile
+        ? (Array.isArray(autonomyProfile) ? autonomyProfile : [autonomyProfile])
+        : home ? ['team', id] : ['visitor', strategy]
+      this.enableAutonomy(id, { profiles })
+    }
     return e
   }
-  removeAgent(id) { this.agents.delete(id) }
+  removeAgent(id) {
+    const e = this.agents.get(id)
+    if (e) this._finishAssignment(e, 'cancelled', 'agent-removed')
+    this.npcReactions.forgetAgent(id)
+    if (e) this.avatarEmotions.forget(e)
+    this.agents.delete(id)
+  }
   agent(id) { return this.agents.get(id) }
-  clearAgents() { this.agents.clear() }
+  clearAgents() {
+    for (const e of this.agents.values()) {
+      this._finishAssignment(e, 'cancelled', 'agents-cleared')
+      this.avatarEmotions.forget(e)
+    }
+    this.npcReactions.reset(this.agents)
+    this.agents.clear()
+  }
+
+  // ---------- autonomous NPC public API ----------
+  enableAutonomy(id, options = {}) {
+    const e = this.agents.get(id)
+    if (!e) return null
+    const variation = stableUnit(id)
+    const profiles = options.profiles || (e.home ? ['team', id] : ['visitor'])
+    e.autonomy = createAutonomyState({
+      ...options,
+      enabled: options.enabled !== false,
+      profiles,
+      now: this.t,
+      speedScale: options.speedScale ?? (0.92 + variation * 0.18),
+      arrivalRadius: options.arrivalRadius ?? (4 + variation * 3)
+    })
+    e.meta.autonomy = autonomySnapshot(e.autonomy)
+    return e.autonomy
+  }
+
+  configureAutonomy(id, patch = {}) {
+    const e = this.agents.get(id)
+    if (!e) return null
+    if (!e.autonomy) this.enableAutonomy(id, patch)
+    else configureAutonomyState(e.autonomy, patch)
+    e.meta.autonomy = autonomySnapshot(e.autonomy)
+    return e.autonomy
+  }
+
+  disableAutonomy(id, reason = 'disabled') {
+    const e = this.agents.get(id)
+    if (!e?.autonomy) return false
+    this._finishAutonomyGoal(e, 'cancelled', reason)
+    this._finishAssignment(e, 'cancelled', reason)
+    e.autonomy.enabled = false
+    e.meta.autonomy = autonomySnapshot(e.autonomy)
+    return true
+  }
+
+  suspendAutonomy(id, reason = 'external') {
+    const e = this.agents.get(id)
+    if (!e?.autonomy) return false
+    e.autonomy.suspendedBy = reason
+    e.path = e.meta.autonomyPath ? [] : e.path
+    delete e.meta.autonomyPath
+    return true
+  }
+
+  resumeAutonomy(id, reason = null) {
+    const e = this.agents.get(id)
+    if (!e?.autonomy || (reason && e.autonomy.suspendedBy !== reason)) return false
+    e.autonomy.suspendedBy = null
+    e.autonomy.nextThinkAt = Math.max(e.autonomy.nextThinkAt || 0, this.t + 250)
+    return true
+  }
+
+  getAutonomyState(id) {
+    const e = this.agents.get(id)
+    return e?.autonomy ? autonomySnapshot(e.autonomy) : null
+  }
+
+  getReactionEvidence(limit = 40) {
+    return this.npcReactions.getEvidence(limit)
+  }
+
+  // Shared emotion API for player, team members and arcade visitors. Explicit
+  // calls still respect the system's hard cooldowns to prevent refresh loops.
+  expressEmotion(id, kind, options = {}) {
+    const e = id === 'player' ? this.player : this.agents.get(id)
+    return e ? this.avatarEmotions.express(e, kind, { ...options, now: this.t }) : null
+  }
+
+  cueEmotion(id, cue, context = {}) {
+    const e = id === 'player' ? this.player : this.agents.get(id)
+    return e ? this.avatarEmotions.cue(e, cue, { ...context, now: this.t }) : null
+  }
+
+  getEmotionState(id) {
+    const e = id === 'player' ? this.player : this.agents.get(id)
+    return e ? this.avatarEmotions.snapshot(e, this.t) : null
+  }
+
+  clearEmotion(id) {
+    const e = id === 'player' ? this.player : this.agents.get(id)
+    return e ? this.avatarEmotions.clear(e) : false
+  }
+
+  setHandheld(id, handheld = null) {
+    const e = id === 'player' ? this.player : this.agents.get(id)
+    if (!e) return false
+    if (!handheld || handheld.active === false) {
+      delete e.meta.handheld
+      if (e.meta.activity === 'portablePlay') delete e.meta.activity
+    } else {
+      e.meta.handheld = { active: true, state: 'playing', ...handheld }
+      e.meta.activity = 'portablePlay'
+    }
+    this.onAgentEvent({ type: 'handheld', agent: e, handheld: e.meta.handheld || null })
+    return true
+  }
+
+  // Contract used by ArcadeSim/portable-play integrations.
+  // enqueueNpcGoal(id, {kind:'play-game', venue:'cabinet'|'handheld',
+  //   target:[tx,ty], gameId, title, maxDurationMs, onArrive,
+  //   allowDuringSim:true}) -> {id, promise, cancel}
+  enqueueNpcGoal(agentId, request = {}) {
+    const e = this.agents.get(agentId)
+    if (!e) return null
+    if (!e.autonomy) this.enableAutonomy(agentId, { profiles: [/^v\d+/i.test(agentId) ? 'visitor' : 'team', agentId] })
+    const a = e.autonomy
+    if (a.assignment) this._finishAssignment(e, 'cancelled', 'superseded')
+    if (a.currentGoal) this._finishAutonomyGoal(e, 'cancelled', 'assigned-goal-preempt')
+    // Assigned evaluation goals have higher priority than the stagger/ambient
+    // `goTo` command that may still be taking the visitor to an idle spot.
+    e.path = []
+    e.cb = null
+    e.sitting = false
+    delete e.meta.autonomyPath
+    a.externalCommand = false
+    a.externalCommandAt = 0
+
+    const venue = request.venue || (request.kind === 'portablePlay' ? 'handheld' : 'cabinet')
+    const kind = request.kind === 'play-game'
+      ? (['handheld', 'portable', 'gameboy'].includes(venue) ? NPC_GOALS.PORTABLE_PLAY : NPC_GOALS.ARCADE_PLAY)
+      : request.kind === 'return-to-desk' ? NPC_GOALS.RETURN_HOME
+        : (request.kind || NPC_GOALS.IDLE)
+    const target = Array.isArray(request.target) ? request.target
+      : Array.isArray(request.target?.tile) ? request.target.tile : null
+    const id = `npc-goal-${++this._assignmentSeq}`
+    let resolve
+    const promise = new Promise(res => { resolve = res })
+    const assignment = {
+      id, kind, venue, target, gameId: request.gameId || null, title: request.title || '',
+      maxDurationMs: Math.max(800, Math.min(18000, request.maxDurationMs || 6000)),
+      maxReplans: Math.max(0, Math.min(5, request.maxReplans ?? 3)),
+      onArrive: typeof request.onArrive === 'function' ? request.onArrive : null,
+      allowDuringSim: request.allowDuringSim !== false,
+      queuedAt: this.t, arrived: false, resolve,
+      evidence: [{ type: 'assigned', at: this.t, venue, target }]
+    }
+    a.assignment = assignment
+    a.nextThinkAt = this.t
+    a.blockedUntil = this.t
+    a.replanTimes = [] // explicit assignment receives a fresh bounded budget
+    e.meta.autonomyAssignment = {
+      id, kind, venue, target, gameId: assignment.gameId, status: 'queued',
+      routePlan: [], evidence: assignment.evidence, replans: a.replanCount,
+      timeoutAt: this.t + a.limits.maxGoalMs
+    }
+    return {
+      id,
+      promise,
+      cancel: () => {
+        if (e.autonomy?.assignment?.id !== id) return false
+        this._finishAutonomyGoal(e, 'cancelled', 'caller-cancelled')
+        this._finishAssignment(e, 'cancelled', 'caller-cancelled')
+        return true
+      }
+    }
+  }
+
+  requestAgentGoal(agentId, kind, options = {}) {
+    return this.enqueueNpcGoal(agentId, { ...options, kind })
+  }
 
   // 오락실 상시 손님: 시뮬레이션이 없어도 맵에 활기가 돌도록 배회 NPC 유지
   ensureArcadeAmbient(visitors) {
     for (const v of visitors) {
       const existed = this.agents.get(v.id)
-      if (existed) { existed.meta.ambientArcade = true; continue }
+      if (existed) {
+        existed.meta.ambientArcade = true
+        this.configureAutonomy(v.id, { profiles: ['visitor', v.strategy] })
+        continue
+      }
       const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE) || this.maps.arcade.spawn
-      const e = this.addAgent(v.id, v.id, spot, { label: `${v.name}(${v.age})`, color: '#c9d1ff', map: 'arcade' })
+      const e = this.addAgent(v.id, v.id, spot, {
+        label: `${v.name}(${v.age})`, color: '#c9d1ff', map: 'arcade',
+        autonomy: true, autonomyProfile: ['visitor', v.strategy], strategy: v.strategy
+      })
       e.meta.ambientArcade = true
+      e.meta.strategy = v.strategy
       e.idleT = 800 + Math.random() * 6000
       e.dir = DIRS[Math.floor(Math.random() * DIRS.length)]
     }
@@ -90,26 +390,79 @@ export class Engine {
   grid() { return this.maps[this.map].collision }
 
   setMap(name, playerTile) {
+    this.npcReactions.reset(this.agents)
+    if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
+    if (this.heldObjectId) this.dropHeld({ silent: true })
     this.map = name
     if (playerTile) { this.player.x = playerTile[0] * T + T / 2; this.player.y = playerTile[1] * T + T - 6 }
     this.player.path = []
+    this.moveMarker = null
+    this.hoverTile = null
+    this.interactionTarget = null
+    this.currentHint = null
+    this._hintKey = ''
+    this.onHint(null)
+    this.stepFx = []
+    this.centerCamera(true)
+  }
+
+  setZoom(value) {
+    this.camera.zoom = Math.max(1, Math.min(1.72, Math.round(value * 100) / 100))
+    this.centerCamera(true)
+    return this.camera.zoom
+  }
+  resizeViewport(cssWidth, cssHeight, dpr = 1) {
+    const ratio = Math.max(1, Math.min(2, dpr || 1))
+    const width = Math.max(320, Math.round(cssWidth * ratio))
+    const height = Math.max(240, Math.round(cssHeight * ratio))
+    if (this.cv.width !== width || this.cv.height !== height) {
+      this.cv.width = width
+      this.cv.height = height
+      this.ctx.imageSmoothingEnabled = false
+      this.centerCamera(true)
+    }
+  }
+  _renderScale() {
+    return Math.max(this.cv.width / WORLD_W, this.cv.height / WORLD_H) * this.camera.zoom
+  }
+  centerCamera(snap = false) {
+    const scale = this._renderScale()
+    const halfW = this.cv.width / (2 * scale), halfH = this.cv.height / (2 * scale)
+    const tx = Math.max(halfW, Math.min(WORLD_W - halfW, this.player.x))
+    const ty = Math.max(halfH, Math.min(WORLD_H - halfH, this.player.y))
+    if (snap) { this.camera.x = tx; this.camera.y = ty }
+    return { x: tx, y: ty }
   }
 
   // ---------- agent commands ----------
-  goTo(id, tile, cb) {
+  goTo(id, tile, cb, options = {}) {
     const e = id === 'player' ? this.player : this.agents.get(id)
     if (!e) return
+    const autonomous = options.autonomous === true
+    if (e !== this.player && e.autonomy && !autonomous) {
+      if (e.autonomy.currentGoal) this._finishAutonomyGoal(e, 'cancelled', options.reason || 'scripted-command')
+      e.autonomy.externalCommand = true
+      e.autonomy.externalCommandAt = this.t
+      e.autonomy.nextThinkAt = this.t + 400
+      delete e.meta.autonomyPath
+    }
     e.sitting = false
     const from = [Math.floor(e.x / T), Math.floor(e.y / T)]
     const path = astar(this.grid(), from, tile)
     e.path = path || []
-    e.cb = cb || null
-    if (!path || !path.length) { e.cb = null; cb && cb() }
+    const done = () => {
+      if (e.autonomy && !autonomous) e.autonomy.externalCommand = false
+      cb && cb()
+    }
+    e.cb = done
+    if (!path || !path.length) { e.cb = null; done() }
   }
   sit(id, tile, face) {
     const e = this.agents.get(id); if (!e) return
     e.x = tile[0] * T + T / 2; e.y = tile[1] * T + T - 8
     e.dir = face || 'down'; e.sitting = true; e.path = []
+    delete e.meta.autonomyPath
+    if (e.autonomy) { e.autonomy.externalCommand = false; e.autonomy.nextThinkAt = this.t + 700 }
   }
   face(id, dir) { const e = id === 'player' ? this.player : this.agents.get(id); if (e) e.dir = dir }
   playerAutoWalk(tile, cb) {
@@ -119,11 +472,209 @@ export class Engine {
     p.cb = cb || null
     if (!p.path.length) { p.cb = null; cb && cb() }
   }
+  screenToWorld(px, py) {
+    const scale = this._renderScale()
+    return {
+      x: (px - this.cv.width / 2) / scale + this.camera.x,
+      y: (py - this.cv.height / 2) / scale + this.camera.y
+    }
+  }
+  setPointerPosition(px, py) {
+    if (px == null || py == null) { this.hoverTile = null; return }
+    const world = this.screenToWorld(px, py)
+    const tx = Math.floor(world.x / T), ty = Math.floor(world.y / T)
+    const row = this.grid()[ty]
+    this.hoverTile = row && tx >= 0 && tx < row.length
+      ? { tx, ty, walkable: row[tx] === '.', x: tx * T + T / 2, y: ty * T + T - 6 }
+      : null
+  }
+  walkPlayerToPoint(px, py) {
+    if (this.freezePlayer) return false
+    const world = this.screenToWorld(px, py)
+    const tile = [Math.floor(world.x / T), Math.floor(world.y / T)]
+    const from = [Math.floor(this.player.x / T), Math.floor(this.player.y / T)]
+    const path = astar(this.grid(), from, tile)
+    if (!path) {
+      this.moveMarker = { x: world.x, y: world.y, valid: false, started: this.t, until: this.t + 650 }
+      return false
+    }
+    this.player.path = path
+    this.player.cb = null
+    const goal = path[path.length - 1] || from
+    this.moveMarker = {
+      x: goal[0] * T + T / 2, y: goal[1] * T + T - 6,
+      valid: true, started: this.t, reachedAt: path.length ? null : this.t,
+      until: this.t + Math.min(9000, Math.max(2400, path.length * 240))
+    }
+    return true
+  }
   bubble(id, text, ttl = 4200) {
     const e = id === 'player' ? this.player : this.agents.get(id)
     if (e) e.bubble = text ? { text: String(text), until: performance.now() + ttl } : null
   }
   emote(id, on) { const e = this.agents.get(id); if (e) e.meta.speaking = on }
+
+  // ---------- free-roam props / vehicles ----------
+  worldObject(id) { return this.worldObjects.find(o => o.id === id) || null }
+
+  getWorldInteractionState() {
+    const mounted = this.worldObject(this.mountedVehicleId)
+    const held = this.worldObject(this.heldObjectId)
+    return {
+      mounted: mounted ? { id: mounted.id, kind: mounted.kind, label: mounted.label, speed: mounted.speed } : null,
+      held: held ? { id: held.id, kind: held.kind, label: held.label } : null
+    }
+  }
+
+  settleFreeRoam({ silent = true } = {}) {
+    const dropped = this.heldObjectId ? this.dropHeld({ silent }) : false
+    const parked = this.mountedVehicleId ? this.dismountVehicle({ silent }) : false
+    return dropped || parked
+  }
+
+  interactWorld(hint = this.currentHint) {
+    if (!hint) return false
+    if (hint.type === 'vehicle') return this.mountVehicle(hint.id)
+    if (hint.type === 'vehicleMounted') return this.dismountVehicle()
+    if (hint.type === 'prop') return this.pickupObject(hint.id)
+    if (hint.type === 'heldProp') return this.dropHeld()
+    return false
+  }
+
+  mountVehicle(id) {
+    const o = this.worldObject(id)
+    if (!o || !o.mountable || o.map !== this.map || o.mounted || o.held || this.freezePlayer) return false
+    if (Math.hypot(o.x - this.player.x, o.y - this.player.y) > T * 1.8) return false
+    if (this.heldObjectId) this.dropHeld({ silent: true })
+    if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
+    o.mounted = true
+    o.x = this.player.x; o.y = this.player.y; o.dir = this.player.dir
+    this.mountedVehicleId = o.id
+    this.player.speed = o.speed
+    this.player.path = []
+    this.player.meta.mounted = o.kind
+    this.player.meta.rideMotion = {
+      phase: 'mount', kind: o.kind, vehicleId: o.id,
+      startedAt: this.t, dir: this.player.dir
+    }
+    this.bubble('player', o.kind === 'bicycle' ? '자전거 출발! 🚲' : '킥보드 출발! 🛴', 1800)
+    this.cueEmotion('player', 'player-mount', { source: `player-mount:${o.kind}` })
+    this._hintKey = ''
+    this.onInteract({ type: 'mount', object: o })
+    return true
+  }
+
+  dismountVehicle({ silent = false } = {}) {
+    const o = this.worldObject(this.mountedVehicleId)
+    if (!o) return false
+    const side = this.player.dir === 'left' ? 1 : this.player.dir === 'right' ? -1 : 1
+    const candidate = { x: this.player.x + side * 24, y: this.player.y + 4 }
+    o.x = this._walkable(candidate.x, candidate.y) ? candidate.x : this.player.x
+    o.y = this._walkable(candidate.x, candidate.y) ? candidate.y : this.player.y
+    o.dir = this.player.dir
+    o.mounted = false
+    this.mountedVehicleId = null
+    this.player.speed = PLAYER_WALK_SPEED
+    delete this.player.meta.mounted
+    if (silent || this.reduceMotion) delete this.player.meta.rideMotion
+    else {
+      this.player.meta.rideMotion = {
+        phase: 'dismount', kind: o.kind, vehicleId: o.id,
+        startedAt: this.t, dir: this.player.dir
+      }
+    }
+    if (!silent) this.bubble('player', '여기 세워둘게', 1400)
+    this._hintKey = ''
+    this.onInteract({ type: 'dismount', object: o })
+    return true
+  }
+
+  pickupObject(id) {
+    const o = this.worldObject(id)
+    if (!o || !o.throwable || o.map !== this.map || o.held || o.mounted || this.freezePlayer) return false
+    if (Math.hypot(o.x - this.player.x, o.y - this.player.y) > T * 1.65) return false
+    if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
+    if (this.heldObjectId) this.dropHeld({ silent: true })
+    o.held = true
+    o.vx = 0; o.vy = 0; o.vz = 0; o.z = 42; o.bounces = 0
+    this.heldObjectId = o.id
+    this.player.meta.holding = o.kind
+    this.bubble('player', `${o.label} 획득!`, 1500)
+    this.cueEmotion('player', 'player-pickup', { source: `player-pickup:${o.kind}` })
+    this._hintKey = ''
+    this.onInteract({ type: 'pickup', object: o })
+    return true
+  }
+
+  dropHeld({ silent = false } = {}) {
+    const o = this.worldObject(this.heldObjectId)
+    if (!o) return false
+    const dir = DIR_VECTOR[this.player.dir] || DIR_VECTOR.down
+    const candidate = { x: this.player.x + dir.x * 25, y: this.player.y + dir.y * 19 }
+    o.x = this._propWalkable(candidate.x, candidate.y) ? candidate.x : this.player.x
+    o.y = this._propWalkable(candidate.x, candidate.y) ? candidate.y : this.player.y
+    o.z = 0; o.vx = 0; o.vy = 0; o.vz = 0; o.held = false; o.spin = 0
+    this.heldObjectId = null
+    delete this.player.meta.holding
+    if (!silent) this.bubble('player', '살짝 내려놓기', 1100)
+    this._hintKey = ''
+    this.onInteract({ type: 'drop', object: o })
+    return true
+  }
+
+  throwHeld(target = null) {
+    const o = this.worldObject(this.heldObjectId)
+    if (!o || this.freezePlayer) return false
+    let dir = DIR_VECTOR[this.player.dir] || DIR_VECTOR.down
+    if (target) {
+      const dx = target.x - this.player.x, dy = target.y - this.player.y
+      const d = Math.hypot(dx, dy)
+      if (d > 1) dir = { x: dx / d, y: dy / d }
+    }
+    const power = o.kind === 'trashbin' ? 7.2 : 9.6
+    o.x = this.player.x + dir.x * 20
+    o.y = this.player.y + dir.y * 16
+    o.z = o.kind === 'trashbin' ? 28 : 34
+    o.vx = dir.x * power
+    o.vy = dir.y * power
+    o.vz = o.kind === 'trashbin' ? 6.8 : 8.2
+    o.spin = 0; o.bounces = 0; o.held = false; o.hitAt = 0
+    this.heldObjectId = null
+    delete this.player.meta.holding
+    this._impact(o.x, o.y, o.color, 'whoosh')
+    this.bubble('player', o.kind === 'trashbin' ? '통째로 간다! 🗑️' : '받아라! 📘', 1200)
+    this.cueEmotion('player', 'player-throw', { source: `player-throw:${o.kind}` })
+    this._hintKey = ''
+    this.onInteract({ type: 'throw', object: o, direction: dir })
+    return true
+  }
+
+  // 모바일: 가까운 소품을 직접 탭해 상호작용하고, 든 소품은 탭 방향으로 던진다.
+  interactAtPoint(px, py) {
+    if (this.freezePlayer) return false
+    const world = this.screenToWorld(px, py)
+    const playerDistance = Math.hypot(world.x - this.player.x, world.y - this.player.y)
+    if (this.heldObjectId) return playerDistance < 48 ? this.dropHeld() : this.throwHeld(world)
+    if (this.mountedVehicleId && playerDistance < 45) return this.dismountVehicle()
+    // The station is tall, so its visible device sits well above its floor
+    // anchor. Give the full silhouette a generous tap target on touch screens.
+    const pocket = this.worldObject(POCKET_STATION.id)
+    if (pocket?.map === this.map && Math.hypot(world.x - pocket.x, world.y - pocket.y) < 86 && Math.hypot(pocket.x - this.player.x, pocket.y - this.player.y) < T * 1.8) {
+      this.onInteract({ type: 'handheld', id: pocket.id, key: 'E', label: 'DOTCADE POCKET · 게임팩 플레이', object: pocket })
+      return true
+    }
+    const hit = this.worldObjects
+      .filter(o => o.map === this.map && !o.held && !o.mounted && o.z < 8)
+      .map(o => ({ o, d: Math.hypot(world.x - o.x, world.y - o.y) }))
+      .filter(({ o, d }) => d < (isPocketStation(o) ? 42 : o.mountable ? 38 : 30))
+      .sort((a, b) => a.d - b.d)[0]?.o
+    if (!hit || Math.hypot(hit.x - this.player.x, hit.y - this.player.y) > T * 1.8) return false
+    if (isPocketStation(hit)) {
+      this.onInteract({ type: 'handheld', id: hit.id, key: 'E', label: 'DOTCADE POCKET · 게임팩 플레이', object: hit })
+      return true
+    }
+    return hit.mountable ? this.mountVehicle(hit.id) : this.pickupObject(hit.id)
+  }
 
   // ---------- loop ----------
   start() {
@@ -135,7 +686,12 @@ export class Engine {
     }
     this._raf = requestAnimationFrame(tick)
   }
-  stop() { cancelAnimationFrame(this._raf) }
+  stop() {
+    cancelAnimationFrame(this._raf)
+    this.npcReactions.reset(this.agents)
+    this.avatarEmotions.reset([this.player, ...this.agents.values()])
+    this._motionMedia?.removeEventListener?.('change', this._onMotionChange)
+  }
 
   // ---------- update ----------
   _walkable(px, py) {
@@ -147,106 +703,827 @@ export class Engine {
     return true
   }
 
+  _propWalkable(px, py) {
+    const g = this.grid()
+    const tx = Math.floor(px / T), ty = Math.floor(py / T)
+    return !!g[ty] && g[ty][tx] === '.'
+  }
+
+  _impact(x, y, color = '#ffffff', kind = 'impact') {
+    this.impactFx.push({ x, y, color, kind, map: this.map, born: this.t, life: kind === 'whoosh' ? 260 : 520 })
+    if (this.impactFx.length > 36) this.impactFx.splice(0, this.impactFx.length - 36)
+  }
+
+  _updateWorldObjects(dt) {
+    const f = dt / 16.67
+    const mounted = this.worldObject(this.mountedVehicleId)
+    if (mounted) {
+      mounted.x = this.player.x; mounted.y = this.player.y; mounted.dir = this.player.dir
+      const hit = this.npcReactions.tryVehicleHit({
+        now: this.t,
+        vehicle: mounted,
+        player: this.player,
+        agents: this.agents,
+        map: this.map,
+        isWalkable: (x, y) => this._walkable(x, y),
+        bubble: (id, text, ttl) => this.bubble(id, text, ttl),
+        onInteract: event => this.onInteract(event)
+      })
+      if (hit) {
+        this._impact(hit.agent.x, hit.agent.y, mounted.color)
+        this.onInteract({ type: 'vehicleHit', object: mounted, agent: hit.agent, reactionId: hit.reactionId })
+      }
+    }
+    const held = this.worldObject(this.heldObjectId)
+    if (held) {
+      const dir = DIR_VECTOR[this.player.dir] || DIR_VECTOR.down
+      held.x = this.player.x + dir.x * 7
+      held.y = this.player.y + dir.y * 5
+      held.z = held.kind === 'trashbin' ? 37 : 45
+      held.spin = 0
+    }
+
+    for (const o of this.worldObjects) {
+      if (o.map !== this.map || o.held || o.mounted) continue
+      const flying = o.z > 0 || Math.abs(o.vx) > .04 || Math.abs(o.vy) > .04 || Math.abs(o.vz) > .04
+      if (!flying) continue
+
+      let wallHit = false
+      const nx = o.x + o.vx * f
+      const ny = o.y + o.vy * f
+      if (this._propWalkable(nx, o.y)) o.x = nx
+      else { o.vx *= -.54; wallHit = true }
+      if (this._propWalkable(o.x, ny)) o.y = ny
+      else { o.vy *= -.54; wallHit = true }
+      if (wallHit) {
+        o.vz = Math.max(2.2, Math.abs(o.vz) * .44)
+        this._impact(o.x, o.y, o.color)
+      }
+
+      o.vz -= .56 * f
+      o.z += o.vz * f
+      o.spin += (Math.abs(o.vx) + Math.abs(o.vy)) * (o.kind === 'book' ? .045 : .018) * f
+
+      const speed = Math.hypot(o.vx, o.vy)
+      if (speed > 2.1 && this.t - o.hitAt > 520 && o.z < 52) {
+        const hit = this.npcReactions.tryPropHit({
+          now: this.t,
+          prop: o,
+          player: this.player,
+          agents: this.agents,
+          map: this.map,
+          isWalkable: (x, y) => this._walkable(x, y),
+          bubble: (id, text, ttl) => this.bubble(id, text, ttl),
+          onInteract: event => this.onInteract(event)
+        })
+        if (hit) {
+          o.hitAt = this.t
+          o.vx *= -hit.restitution; o.vy *= -hit.restitution
+          o.vz = Math.max(hit.lift, Math.abs(o.vz) * .5)
+          this._impact(o.x, o.y, o.color)
+          this.onInteract({ type: 'propHit', object: o, agent: hit.agent, reactionId: hit.reactionId })
+        }
+      }
+
+      if (o.z <= 0) {
+        o.z = 0
+        if (Math.abs(o.vz) > 1.55 && o.bounces < 3) {
+          o.vz = Math.abs(o.vz) * .38
+          o.vx *= .69; o.vy *= .69; o.bounces += 1
+          this._impact(o.x, o.y, o.color)
+        } else {
+          o.vz = 0; o.vx *= .72; o.vy *= .72
+          if (Math.hypot(o.vx, o.vy) < .16) { o.vx = 0; o.vy = 0; o.spin = 0; o.bounces = 0 }
+        }
+      } else {
+        o.vx *= Math.pow(.994, f); o.vy *= Math.pow(.994, f)
+      }
+    }
+    this.impactFx = this.impactFx.filter(fx => this.t - fx.born < fx.life)
+  }
+
+  _finishAssignment(e, status = 'success', reason = '') {
+    const a = e?.autonomy
+    const assignment = a?.assignment
+    if (!assignment) return null
+    const meta = e.meta.autonomyAssignment || {}
+    const report = {
+      id: assignment.id,
+      agentId: e.id,
+      goal: assignment.kind,
+      venue: assignment.venue,
+      gameId: assignment.gameId,
+      status,
+      arrived: status === 'arrived' || reason === 'assigned-arrived',
+      reason,
+      elapsedMs: Math.max(0, this.t - assignment.queuedAt),
+      routePlan: meta.routePlan || [],
+      evidence: [...(assignment.evidence || []), ...(a.evidence || []).slice(-8)],
+      replans: Math.max(0, a.replanCount - (assignment.replansAtStart || 0)),
+      timeout: /timeout/i.test(reason)
+    }
+    a.assignment = null
+    e.meta.autonomyAssignment = { ...meta, status, reason, completedAt: this.t, report }
+    try { assignment.resolve?.(report) } catch {}
+    this.onAgentEvent({ type: 'autonomy-assignment', agent: e, report })
+    return report
+  }
+
+  _releaseConversation(e) {
+    const conversation = e?.autonomy?.conversation
+    if (!conversation) return
+    const target = conversation.targetId === 'player' ? this.player : this.agents.get(conversation.targetId)
+    for (const participant of [e, target]) {
+      if (!participant) continue
+      if (participant.meta.socialLock?.by === e.id) delete participant.meta.socialLock
+      if (participant.meta.activity === 'socialize') delete participant.meta.activity
+    }
+    e.autonomy.conversation = null
+  }
+
+  _finishAutonomyGoal(e, status = 'success', reason = '') {
+    const a = e?.autonomy
+    if (!a?.currentGoal) return null
+    const goal = a.currentGoal
+    this._releaseConversation(e)
+    if (e.meta.autonomyPath) e.path = []
+    delete e.meta.autonomyPath
+    if (a.activity?.kind === 'portablePlay') this.setHandheld(e.id, null)
+    if (['portablePlay', 'arcadePlay', 'work'].includes(e.meta.activity)) delete e.meta.activity
+    delete e.meta.playingGame
+    const feedback = finishGoal(a, this.t, { status, reason, goal })
+    if (status === 'success') this.avatarEmotions.cue(e, 'goal-success', { now: this.t, goal: goal.kind })
+    else if (status === 'failed') this.avatarEmotions.cue(e, 'goal-failed', { now: this.t, goal: goal.kind })
+    if (goal.assignmentId && a.assignment?.id === goal.assignmentId) {
+      this._finishAssignment(e, reason === 'assigned-arrived' ? 'arrived' : status, reason)
+    }
+    e.meta.autonomy = autonomySnapshot(a)
+    this.onAgentEvent({ type: 'autonomy-feedback', agent: e, feedback })
+    return feedback
+  }
+
+  _reactionUntil(e) {
+    return Math.max(Number(e.meta.reactionLockUntil) || 0, Number(e.meta.reactionUntil) || 0)
+  }
+
+  _entityForAutonomyTarget(id) {
+    return id === 'player' ? this.player : this.agents.get(id)
+  }
+
+  _adjacentTile(target, fromEntity) {
+    const tx = Math.floor(target.x / T), ty = Math.floor(target.y / T)
+    const from = [Math.floor(fromEntity.x / T), Math.floor(fromEntity.y / T)]
+    return [[tx - 1, ty], [tx + 1, ty], [tx, ty + 1], [tx, ty - 1]]
+      .filter(([x, y]) => this.grid()[y]?.[x] === '.')
+      .sort((a, b) => (Math.abs(a[0] - from[0]) + Math.abs(a[1] - from[1])) - (Math.abs(b[0] - from[0]) + Math.abs(b[1] - from[1])))[0] || [tx, ty]
+  }
+
+  _observeNpc(e) {
+    const a = e.autonomy
+    const tile = [Math.floor(e.x / T), Math.floor(e.y / T)]
+    const candidates = []
+    const peers = [...this.agents.values()]
+      .filter(other => other !== e && other.visible && (!other.map || other.map === this.map))
+      .filter(other => !other.meta.chatting && this._reactionUntil(other) <= this.t)
+      .filter(other => !other.meta.socialLock || other.meta.socialLock.until <= this.t)
+      .filter(other => !other.autonomy?.externalCommand && !other.path.length && !other.autonomy?.currentGoal)
+      .map(other => ({ entity: other, distance: Math.hypot(other.x - e.x, other.y - e.y) }))
+      .filter(x => x.distance < T * 4.8)
+    if (this.map === 'office' && !this.freezePlayer) {
+      const playerDistance = Math.hypot(this.player.x - e.x, this.player.y - e.y)
+      if (playerDistance < T * 4.2) peers.push({ entity: this.player, distance: playerDistance })
+    }
+    peers.sort((x, y) => x.distance - y.distance)
+
+    const assignment = a.assignment
+    if (assignment) {
+      let target = assignment.target
+      if (!target && assignment.kind === NPC_GOALS.ARCADE_PLAY) {
+        const cab = this.maps.arcade.cabinets[Math.floor(stableUnit(`${e.id}:${assignment.id}`) * this.maps.arcade.cabinets.length)]
+        target = cab?.spot || null
+      }
+      candidates.push({
+        id: assignment.id,
+        kind: assignment.kind,
+        targetTile: target,
+        targetId: assignment.venue === 'cabinet' ? `cabinet:${assignment.gameId || assignment.id}` : null,
+        durationMs: assignment.maxDurationMs,
+        data: { gameId: assignment.gameId, title: assignment.title, venue: assignment.venue },
+        assignmentId: assignment.id,
+        handoffOnArrive: !!assignment.onArrive,
+        assigned: true
+      })
+      return { map: this.map, tile, nearbyCount: peers.length, peers, candidates, assignment: true }
+    }
+
+    if (peers.length && Math.random() < 0.68) {
+      const nearPool = peers.slice(0, Math.min(3, peers.length))
+      const peer = nearPool[Math.floor(Math.random() * nearPool.length)]
+      candidates.push({
+        kind: NPC_GOALS.SOCIALIZE,
+        targetId: peer.entity.id,
+        targetTile: this._adjacentTile(peer.entity, e),
+        opportunity: Math.max(0, .25 - peer.distance / (T * 20)),
+        maxTurns: 2 + (Math.random() < .55 ? 1 : 0)
+      })
+    }
+
+    if (this.map === 'office' && e.home) {
+      const home = e.home.desk
+      const distanceHome = Math.abs(home[0] - tile[0]) + Math.abs(home[1] - tile[1])
+      if (distanceHome > 1) candidates.push({ kind: NPC_GOALS.RETURN_HOME, targetTile: home, face: e.home.face, opportunity: distanceHome > 7 ? .25 : 0 })
+      candidates.push({ kind: NPC_GOALS.WORK, targetTile: home, face: e.home.face, durationMs: 3600 + Math.random() * 2400, opportunity: e.sitting ? .12 : 0 })
+      candidates.push({ kind: NPC_GOALS.PORTABLE_PLAY, durationMs: 4200 + Math.random() * 4500, data: { venue: 'handheld' }, opportunity: e.sitting ? -.08 : .06 })
+      const roam = randomWalkable(this.grid(), this.maps.office.wander)
+      if (roam) candidates.push({ kind: NPC_GOALS.WANDER, targetTile: roam })
+    } else if (this.map === 'arcade') {
+      const cabs = this.maps.arcade.cabinets
+      const reserved = new Set([...this.agents.values()]
+        .filter(other => other !== e)
+        .map(other => other.autonomy?.currentGoal?.targetId || (other.meta.playingGame?.cabinetId != null ? `cabinet:${other.meta.playingGame.cabinetId}` : null))
+        .filter(Boolean))
+      const available = cabs.filter(item => !reserved.has(`cabinet:${item.id}`))
+      const cabPool = available.length ? available : cabs
+      const cab = cabPool[Math.floor(Math.random() * cabPool.length)]
+      if (cab) candidates.push({
+        kind: NPC_GOALS.ARCADE_PLAY,
+        targetId: `cabinet:${cab.id}`,
+        targetTile: cab.spot,
+        durationMs: 3600 + Math.random() * 4200,
+        data: { cabinetId: cab.id },
+        opportunity: this.cabinetLabels[cab.id] ? .13 : 0
+      })
+      candidates.push({ kind: NPC_GOALS.PORTABLE_PLAY, durationMs: 3800 + Math.random() * 4200, data: { venue: 'handheld' } })
+      const roam = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE)
+      if (roam) candidates.push({ kind: NPC_GOALS.WANDER, targetTile: roam, opportunity: .05 })
+    }
+    candidates.push({ kind: NPC_GOALS.IDLE, durationMs: 800 + Math.random() * 1800 })
+    return { map: this.map, tile, nearbyCount: peers.length, peers, candidates, assignment: false }
+  }
+
+  _beginAutonomyGoal(e, goal) {
+    const a = e.autonomy
+    const plan = buildBoundedPlan(goal, a.limits)
+    beginGoal(a, goal, plan, this.t)
+    if (goal.kind === NPC_GOALS.SOCIALIZE) e.sitting = false
+    e.meta.autonomy = autonomySnapshot(a)
+    if (goal.assignmentId && e.meta.autonomyAssignment) {
+      e.meta.autonomyAssignment.status = goal.targetTile ? 'planning-route' : 'starting'
+      e.meta.autonomyAssignment.routePlan = plan.map(step => ({ kind: step.kind, target: step.targetTile || null }))
+      a.assignment.replansAtStart = a.replanCount
+      a.assignment.evidence.push({ type: 'plan', at: this.t, steps: plan.length })
+    }
+    this.avatarEmotions.cue(e, 'goal-start', { now: this.t, goal: goal.kind })
+    this.onAgentEvent({ type: 'autonomy-goal', agent: e, goal, plan })
+  }
+
+  _startAutonomyRoute(e, step, replan = false) {
+    const a = e.autonomy
+    const from = [Math.floor(e.x / T), Math.floor(e.y / T)]
+    const target = step.targetTile
+    if (!target) return 'failed'
+    const targetX = target[0] * T + T / 2, targetY = target[1] * T + T - 6
+    if (Math.hypot(e.x - targetX, e.y - targetY) <= a.arrivalRadius + 3) return 'arrived'
+    const raw = astar(this.grid(), from, target)
+    if (!raw?.length) return 'failed'
+    const route = smoothTilePath(this.grid(), from, raw, 6)
+    if (!route.length) return 'failed'
+    e.sitting = false
+    e.path = route
+    e.cb = null
+    e.meta.autonomyPath = true
+    step.started = true
+    step.routeTarget = [...target]
+    step.routeStartedAt = this.t
+    a.stuck = { x: e.x, y: e.y, sampledAt: this.t, since: 0, routeLength: route.length }
+    a.evidence.push({ type: replan ? 'route-replanned' : 'route-planned', at: this.t, rawNodes: raw.length, waypoints: route.length, target })
+    a.evidence = a.evidence.slice(-24)
+    if (a.assignment && e.meta.autonomyAssignment) {
+      e.meta.autonomyAssignment.status = 'walking'
+      e.meta.autonomyAssignment.routePlan = route.map(([x, y]) => [x, y])
+      e.meta.autonomyAssignment.replans = Math.max(0, a.replanCount - (a.assignment.replansAtStart || 0))
+      a.assignment.evidence.push({ type: replan ? 'replan' : 'route', at: this.t, waypoints: route.length })
+    }
+    return 'moving'
+  }
+
+  _replanAutonomyRoute(e, step, reason) {
+    const a = e.autonomy
+    if (a.assignment) {
+      const used = Math.max(0, a.replanCount - (a.assignment.replansAtStart || 0))
+      if (used >= a.assignment.maxReplans) return false
+    }
+    if (!consumeReplanBudget(a, this.t)) return false
+    e.path = []
+    delete e.meta.autonomyPath
+    a.evidence.push({ type: 'replan-request', reason, at: this.t })
+    return this._startAutonomyRoute(e, step, true) === 'moving'
+  }
+
+  _pickDialogueLine(speaker, pool) {
+    const usable = pool.filter(line => (this._sentenceCooldowns.get(`${speaker.id}:${line}`) || 0) <= this.t)
+    const source = usable.length ? usable : pool
+    const line = source[Math.floor(Math.random() * source.length)]
+    this._sentenceCooldowns.set(`${speaker.id}:${line}`, this.t + 24000)
+    return line
+  }
+
+  _faceEachOther(a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y
+    a.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up')
+    b.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'left' : 'right') : (dy > 0 ? 'up' : 'down')
+  }
+
+  _updateSocialAction(e, step) {
+    const a = e.autonomy
+    const target = this._entityForAutonomyTarget(step.targetId)
+    if (!target || (target.map && target.map !== this.map) || this._reactionUntil(target) > this.t) return 'failed'
+    if (!a.conversation) {
+      if (Math.hypot(target.x - e.x, target.y - e.y) > T * 2.25) return 'failed'
+      if (target.meta.socialLock && target.meta.socialLock.until > this.t && target.meta.socialLock.by !== e.id) return 'failed'
+      const turns = Math.max(2, Math.min(3, step.maxTurns || 3))
+      const until = this.t + turns * 1180 + 900
+      a.conversation = { targetId: target.id, turns, turn: 0, nextAt: this.t + 180, until }
+      e.meta.socialLock = { by: e.id, with: target.id, until }
+      target.meta.socialLock = { by: e.id, with: e.id, until }
+      e.meta.activity = 'socialize'
+      target.meta.activity = 'socialize'
+      if (target !== this.player && target.meta.autonomyPath) { target.path = []; delete target.meta.autonomyPath }
+      this._faceEachOther(e, target)
+      this.avatarEmotions.cue(e, 'social-start', { now: this.t, source: 'social-start' })
+      this.avatarEmotions.cue(target, 'social-start', { now: this.t, source: 'social-start' })
+      this.onAgentEvent({ type: 'social-start', agent: e, target, turns })
+    }
+    const chat = a.conversation
+    this._faceEachOther(e, target)
+    if (this.t >= chat.nextAt && chat.turn < chat.turns) {
+      const speaker = chat.turn % 2 === 0 ? e : target
+      const pool = speaker === e ? SOCIAL_OPENERS : speaker === this.player ? PLAYER_REPLIES : SOCIAL_REPLIES
+      this.bubble(speaker.id, this._pickDialogueLine(speaker, pool), 1750)
+      this.avatarEmotions.cue(speaker, 'social-turn', { now: this.t, source: 'social-turn' })
+      chat.turn += 1
+      chat.nextAt = this.t + 1120
+    }
+    if (chat.turn >= chat.turns && this.t >= chat.nextAt + 320) {
+      this.avatarEmotions.cue(e, 'social-complete', { now: this.t, source: 'social-complete' })
+      this.avatarEmotions.cue(target, 'social-complete', { now: this.t, source: 'social-complete' })
+      this._releaseConversation(e)
+      this.onAgentEvent({ type: 'social-complete', agent: e, target, turns: chat.turn })
+      return 'success'
+    }
+    if (this.t > chat.until) { this._releaseConversation(e); return 'failed' }
+    return 'running'
+  }
+
+  _beginAutonomyActivity(e, step) {
+    const a = e.autonomy
+    const goal = a.currentGoal
+    const duration = Math.min(step.durationMs || 2500, a.limits.maxActionMs)
+    a.activity = { kind: step.activity, startedAt: this.t, until: this.t + duration }
+    e.meta.activity = step.activity
+    if (step.activity === 'portablePlay') {
+      this.setHandheld(e.id, {
+        active: true,
+        gameId: step.data?.gameId || goal.data?.gameId || null,
+        title: step.data?.title || goal.data?.title || 'DOTCADE GO',
+        state: 'playing',
+        plannerGoalId: goal.id || goal.assignmentId || goal.kind
+      })
+      this.bubble(e.id, this._pickDialogueLine(e, PORTABLE_LINES), 2200)
+    } else if (step.activity === 'arcadePlay') {
+      e.meta.playingGame = { gameId: step.data?.gameId || goal.data?.gameId || null, cabinetId: step.data?.cabinetId ?? goal.data?.cabinetId }
+      e.dir = goal.data?.cabinetId >= 5 ? 'right' : 'up'
+      this.bubble(e.id, ARCADE_LINES[Math.floor(Math.random() * ARCADE_LINES.length)], 2100)
+    } else if (step.activity === 'work') {
+      this.bubble(e.id, this._pickDialogueLine(e, e.ambient?.length ? e.ambient : WORK_LINES), 2200)
+    }
+    this.avatarEmotions.cue(e, 'activity-start', { now: this.t, activity: step.activity })
+    this._notifyAssignmentArrived(e, step.activity)
+    this.onAgentEvent({ type: 'autonomy-activity', agent: e, activity: a.activity, goal })
+  }
+
+  _notifyAssignmentArrived(e, activity = null) {
+    const a = e.autonomy
+    const assignment = a?.assignment
+    if (!assignment || assignment.arrived) return false
+    assignment.arrived = true
+    assignment.evidence.push({ type: 'arrived', at: this.t, activity })
+    if (e.meta.autonomyAssignment) e.meta.autonomyAssignment.status = activity ? 'playing' : 'arrived'
+    try {
+      assignment.onArrive?.({ agent: e, goal: a.currentGoal, world: this, assignmentId: assignment.id, activity })
+    } catch (error) {
+      assignment.evidence.push({ type: 'on-arrive-error', at: this.t, message: String(error?.message || error) })
+    }
+    return true
+  }
+
+  _stepAutonomyAction(e) {
+    const a = e.autonomy
+    const step = a.plan[a.actionIndex]
+    if (!step) { this._finishAutonomyGoal(e, 'success', 'plan-complete'); return }
+    if (actionTimedOut(a, this.t)) { this._finishAutonomyGoal(e, 'failed', 'bounded-timeout'); return }
+
+    if (step.kind === 'move') {
+      const targetX = step.targetTile[0] * T + T / 2, targetY = step.targetTile[1] * T + T - 6
+      const arrived = Math.hypot(e.x - targetX, e.y - targetY) <= a.arrivalRadius + 4
+      if (arrived) {
+        if ((a.arrivalPauseUntil || 0) > this.t) return
+        e.path = []; delete e.meta.autonomyPath
+        this._notifyAssignmentArrived(e)
+        if (a.currentGoal.handoffOnArrive) {
+          this._finishAutonomyGoal(e, 'success', 'assigned-arrived')
+          return
+        }
+        if (advanceAction(a, this.t, { type: 'arrived', target: step.targetTile })) this._finishAutonomyGoal(e, 'success', 'plan-complete')
+        return
+      }
+      if (!step.started) {
+        const result = this._startAutonomyRoute(e, step)
+        if (result === 'failed') this._finishAutonomyGoal(e, 'failed', 'route-unreachable')
+        else if (result === 'arrived' && advanceAction(a, this.t)) this._finishAutonomyGoal(e, 'success', 'plan-complete')
+        return
+      }
+      if (!e.path.length) {
+        if (!this._replanAutonomyRoute(e, step, 'route-lost')) this._finishAutonomyGoal(e, 'failed', 'replan-budget-exhausted')
+        return
+      }
+      if (sampleStuck(a, e, e.path.length, this.t)) {
+        if (!this._replanAutonomyRoute(e, step, 'stuck-detected')) this._finishAutonomyGoal(e, 'failed', 'stuck-fallback')
+      }
+      return
+    }
+
+    if (step.kind === 'sit') {
+      e.sitting = true
+      e.dir = step.face || a.currentGoal.face || 'up'
+      if (advanceAction(a, this.t, { type: 'sat-down' })) this._finishAutonomyGoal(e, 'success', 'plan-complete')
+      return
+    }
+    if (step.kind === 'socialize') {
+      const result = this._updateSocialAction(e, step)
+      if (result === 'success') {
+        if (advanceAction(a, this.t, { type: 'conversation-complete', target: step.targetId })) this._finishAutonomyGoal(e, 'success', 'plan-complete')
+      } else if (result === 'failed') this._finishAutonomyGoal(e, 'failed', 'social-target-unavailable')
+      return
+    }
+    if (step.kind === 'activity') {
+      if (a.currentGoal.handoffOnArrive && a.assignment?.onArrive) {
+        this._notifyAssignmentArrived(e, step.activity)
+        this._finishAutonomyGoal(e, 'success', 'assigned-arrived')
+        return
+      }
+      if (!a.activity) this._beginAutonomyActivity(e, step)
+      if (this.t >= a.activity.until) {
+        if (a.activity.kind === 'portablePlay') this.setHandheld(e.id, null)
+        if (['portablePlay', 'arcadePlay', 'work'].includes(e.meta.activity)) delete e.meta.activity
+        delete e.meta.playingGame
+        a.activity = null
+        if (advanceAction(a, this.t, { type: 'activity-complete', activity: step.activity })) this._finishAutonomyGoal(e, 'success', 'plan-complete')
+      }
+      return
+    }
+    if (step.kind === 'wait') {
+      if (this.t - a.actionStartedAt >= (step.durationMs || 700)) {
+        if (advanceAction(a, this.t, { type: 'wait-complete' })) this._finishAutonomyGoal(e, 'success', 'plan-complete')
+      }
+    }
+  }
+
+  _updateNpcAutonomy(e, dt) {
+    const a = e.autonomy
+    if (!a?.enabled) return
+    if (a.assignment && this.t - a.assignment.queuedAt > a.limits.maxGoalMs) {
+      if (a.currentGoal) this._finishAutonomyGoal(e, 'failed', 'assignment-timeout')
+      else this._finishAssignment(e, 'failed', 'assignment-timeout')
+      return
+    }
+    if (e.meta.chatting || a.suspendedBy) return
+    if (e.map && e.map !== this.map) return
+
+    const reactionUntil = this._reactionUntil(e)
+    if (a.externalCommand) {
+      // A reaction may deliberately clear a scripted path/callback. Release the
+      // command lock after that reaction so the actor cannot become inert.
+      if (e.path.length || reactionUntil > this.t) return
+      a.externalCommand = false
+      a.nextThinkAt = Math.max(a.nextThinkAt, this.t + 350)
+    }
+    if (reactionUntil > this.t) {
+      if (!a.pausedAt) a.pausedAt = this.t
+      return
+    }
+    if (a.pausedAt) {
+      const pausedFor = this.t - a.pausedAt
+      a.actionStartedAt += pausedFor
+      a.goalStartedAt += pausedFor
+      a.stuck.sampledAt = this.t
+      a.pausedAt = 0
+      a.nextThinkAt = Math.max(a.nextThinkAt, this.t + 280)
+    }
+    if (e.meta.socialLock?.until > this.t && e.meta.socialLock.by !== e.id) return
+    if (this.meetingMode) return
+    if (this.simMode && !(a.assignment?.allowDuringSim && a.assignment)) return
+
+    if (a.currentGoal) {
+      ageDrives(a, dt, { map: this.map, nearbyCount: 0 })
+      this._stepAutonomyAction(e)
+      e.meta.autonomy = autonomySnapshot(a)
+      return
+    }
+    if (this.t < a.nextThinkAt || this.t < a.blockedUntil) return
+
+    const observation = this._observeNpc(e)
+    ageDrives(a, dt, observation)
+    if (!consumeReplanBudget(a, this.t)) {
+      this._beginAutonomyGoal(e, { kind: NPC_GOALS.IDLE, durationMs: 900, utility: 0, fallback: true })
+      return
+    }
+    const goal = chooseUtilityGoal(a, observation.candidates, this.t)
+    if (!goal) {
+      a.nextThinkAt = this.t + a.limits.failureBackoffMs
+      return
+    }
+    this._beginAutonomyGoal(e, goal)
+  }
+
+  _separationSteer(e, dx, dy) {
+    const a = e.autonomy
+    let sx = 0, sy = 0
+    const neighbors = [this.player, ...this.agents.values()]
+    for (const other of neighbors) {
+      if (other === e || !other.visible || (other.map && other.map !== this.map)) continue
+      const ox = e.x - other.x, oy = e.y - other.y
+      const d = Math.hypot(ox, oy)
+      if (d < 1) {
+        const sign = e.id < other.id ? -1 : 1
+        sx += sign * .65; sy += (stableUnit(`${e.id}:${other.id}`) - .5) * .4
+        continue
+      }
+      if (d > 36) continue
+      const strength = (36 - d) / 36
+      sx += (ox / d) * strength
+      sy += (oy / d) * strength
+    }
+    const mag = Math.hypot(sx, sy)
+    if (mag > 1) { sx /= mag; sy /= mag }
+    // Low-pass steering + a forward bias provides hysteresis and prevents two
+    // NPCs from flipping left/right on every frame in a narrow lane.
+    a.steering.x = a.steering.x * .82 + sx * .18
+    a.steering.y = a.steering.y * .82 + sy * .18
+    let nx = dx + a.steering.x * .28
+    let ny = dy + a.steering.y * .28
+    const n = Math.hypot(nx, ny) || 1
+    return { x: nx / n, y: ny / n }
+  }
+
+  _moveAgentAlongPath(e, f) {
+    if (!e.path.length) return
+    const beforeX = e.x, beforeY = e.y
+    const [tx, ty] = e.path[0]
+    const gx = tx * T + T / 2, gy = ty * T + T - 6
+    const ddx = gx - e.x, ddy = gy - e.y
+    const dist = Math.hypot(ddx, ddy)
+    const autonomous = !!(e.autonomy?.enabled && e.meta.autonomyPath)
+    const speed = e.speed * (autonomous ? e.autonomy.speedScale : 1)
+    const arrivalRadius = autonomous ? e.autonomy.arrivalRadius : 1
+    if (dist < speed * f + arrivalRadius) {
+      e.x = gx; e.y = gy; e.path.shift()
+      e.dir = directionFromDelta(e.x - beforeX, e.y - beforeY, e.dir)
+      if (!e.path.length) {
+        e.moving = false
+        if (autonomous) e.autonomy.arrivalPauseUntil = this.t + 160 + stableUnit(`${e.id}:${tx}:${ty}`) * 260
+        const cb = e.cb; e.cb = null; cb && cb()
+      }
+      return
+    }
+
+    let move = { x: ddx / dist, y: ddy / dist }
+    // Separation is only applied to planner-owned routes. Meeting seats and
+    // scripted evaluation positions therefore stay pixel deterministic.
+    if (autonomous && dist > 24) move = this._separationSteer(e, move.x, move.y)
+    const stepX = move.x * speed * f, stepY = move.y * speed * f
+    if (!autonomous) {
+      e.x += stepX; e.y += stepY
+    } else {
+      const nx = e.x + stepX, ny = e.y + stepY
+      if (this._walkable(nx, ny)) { e.x = nx; e.y = ny }
+      else {
+        // Axis fallback slides around another agent/furniture without a full
+        // A* replan. Persistent failure is handled by the stuck detector.
+        if (this._walkable(nx, e.y)) e.x = nx
+        if (this._walkable(e.x, ny)) e.y = ny
+      }
+    }
+    // Face the displacement that actually happened after collision sliding,
+    // not the intended steering vector. This prevents blocked NPCs from
+    // appearing to moonwalk while the planner searches for a clear axis.
+    e.dir = directionFromDelta(e.x - beforeX, e.y - beforeY, e.dir)
+    e.moving = Math.hypot(e.x - beforeX, e.y - beforeY) > 0.02
+  }
+
   update(dt) {
     const f = dt / 16.67
     // --- player ---
     const p = this.player
-    if (this.freezePlayer && p.path && p.path.length) {
+    const keyX = (this.keys.has('ArrowRight') || this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('ArrowLeft') || this.keys.has('KeyA') ? 1 : 0)
+    const keyY = (this.keys.has('ArrowDown') || this.keys.has('KeyS') ? 1 : 0) - (this.keys.has('ArrowUp') || this.keys.has('KeyW') ? 1 : 0)
+    if (p.path && p.path.length && (this.freezePlayer || (!keyX && !keyY))) {
+      const beforeX = p.x, beforeY = p.y
       const [tx, ty] = p.path[0]
       const gx = tx * T + T / 2, gy = ty * T + T - 6
       const ddx = gx - p.x, ddy = gy - p.y
       const dist = Math.hypot(ddx, ddy)
       if (dist < p.speed * f + 1) {
         p.x = gx; p.y = gy; p.path.shift()
+        p.dir = directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
         if (!p.path.length) { p.moving = false; const cb = p.cb; p.cb = null; cb && cb() }
       } else {
         p.x += (ddx / dist) * p.speed * f; p.y += (ddy / dist) * p.speed * f
-        p.dir = Math.abs(ddx) > Math.abs(ddy) ? (ddx > 0 ? 'right' : 'left') : (ddy > 0 ? 'down' : 'up')
+        p.dir = directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
         p.moving = true
       }
     } else if (!this.freezePlayer) {
-      let dx = 0, dy = 0
-      if (this.keys.has('ArrowLeft') || this.keys.has('KeyA')) dx -= 1
-      if (this.keys.has('ArrowRight') || this.keys.has('KeyD')) dx += 1
-      if (this.keys.has('ArrowUp') || this.keys.has('KeyW')) dy -= 1
-      if (this.keys.has('ArrowDown') || this.keys.has('KeyS')) dy += 1
+      let dx = keyX, dy = keyY
       if (dx || dy) {
+        const beforeX = p.x, beforeY = p.y
+        p.path = []
+        if (this.moveMarker?.valid && !this.moveMarker.reachedAt) this.moveMarker.until = Math.min(this.moveMarker.until, this.t + 240)
         const n = Math.hypot(dx, dy); dx /= n; dy /= n
         const nx = p.x + dx * p.speed * f, ny = p.y + dy * p.speed * f
         if (this._walkable(nx, p.y)) p.x = nx
         if (this._walkable(p.x, ny)) p.y = ny
-        p.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up')
-        p.moving = true
+        p.dir = directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
+        p.moving = Math.hypot(p.x - beforeX, p.y - beforeY) > 0.02
       } else p.moving = false
     } else p.moving = false
 
-    // --- agents follow paths / idle ---
+    this._updateWorldObjects(dt)
+    this.npcReactions.update({
+      now: this.t,
+      dt,
+      agents: this.agents,
+      map: this.map,
+      player: this.player,
+      isWalkable: (x, y) => this._walkable(x, y),
+      bubble: (id, text, ttl) => this.bubble(id, text, ttl),
+      goTo: (id, tile) => this.goTo(id, tile, null, { autonomous: true, reason: 'impact-evade' }),
+      onInteract: event => this.onInteract(event)
+    })
+    this.avatarEmotions.update({ now: this.t, entities: [p, ...this.agents.values()] })
+
+    // --- agents follow paths / bounded autonomous loop ---
     for (const e of this.agents.values()) {
       if (e.map && e.map !== this.map) { if (e.bubble && performance.now() > e.bubble.until) e.bubble = null; continue }
-      if (e.path.length) {
-        const [tx, ty] = e.path[0]
-        const gx = tx * T + T / 2, gy = ty * T + T - 6
-        const ddx = gx - e.x, ddy = gy - e.y
-        const dist = Math.hypot(ddx, ddy)
-        if (dist < e.speed * f + 1) {
-          e.x = gx; e.y = gy; e.path.shift()
-          if (!e.path.length) { e.moving = false; const cb = e.cb; e.cb = null; cb && cb() }
-        } else {
-          e.x += (ddx / dist) * e.speed * f
-          e.y += (ddy / dist) * e.speed * f
-          e.dir = Math.abs(ddx) > Math.abs(ddy) ? (ddx > 0 ? 'right' : 'left') : (ddy > 0 ? 'down' : 'up')
-          e.moving = true
-        }
-      } else if (!this.meetingMode && !this.simMode && this.map === 'office' && e.home && !e.meta.chatting) {
-        // idle FSM: 대부분 자리, 가끔 배회
+      if (e.path.length) this._moveAgentAlongPath(e, f)
+      // Compatibility fallback for explicitly non-autonomous scripted actors.
+      // Team members and visitors never enter this legacy branch.
+      else if (!e.autonomy?.enabled && !this.meetingMode && !this.simMode && this.map === 'office' && e.home && !e.meta.chatting) {
         e.idleT -= dt
         if (e.idleT <= 0) {
           e.idleT = 14000 + Math.random() * 30000
-          const r = Math.random()
-          if (e.sitting && r < 0.3) {
+          if (e.sitting && Math.random() < 0.3) {
             const spot = randomWalkable(this.grid(), this.maps.office.wander)
             if (spot) this.goTo(e.id, spot, () => {
               setTimeout(() => {
                 if (!this.meetingMode && e.home) this.goTo(e.id, e.home.desk, () => this.sit(e.id, e.home.desk, e.home.face))
               }, 2500 + Math.random() * 5000)
             })
-          } else if (!e.sitting && e.home) {
-            this.goTo(e.id, e.home.desk, () => this.sit(e.id, e.home.desk, e.home.face))
-          } else if (e.ambient && Math.random() < 0.6) {
-            this.bubble(e.id, e.ambient[Math.floor(Math.random() * e.ambient.length)], 3600)
-          }
+          } else if (!e.sitting && e.home) this.goTo(e.id, e.home.desk, () => this.sit(e.id, e.home.desk, e.home.face))
         }
-      } else if (!this.simMode && e.map === 'arcade' && e.meta.ambientArcade && !e.meta.chatting) {
-        // 오락실 손님 배회 FSM: 돌아다니기 · 캐비닛 구경 · 혼잣말
+      } else if (!e.autonomy?.enabled && !this.simMode && e.map === 'arcade' && e.meta.ambientArcade && !e.meta.chatting) {
         e.idleT -= dt
         if (e.idleT <= 0) {
           e.idleT = 8000 + Math.random() * 16000
-          const r = Math.random()
-          if (r < 0.45) {
-            const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE)
-            if (spot) this.goTo(e.id, spot)
-          } else if (r < 0.7) {
-            const cabs = this.maps.arcade.cabinets
-            const c = cabs[Math.floor(Math.random() * cabs.length)]
-            this.goTo(e.id, c.spot, () => this.face(e.id, 'up'))
-          } else {
-            this.bubble(e.id, ARCADE_LINES[Math.floor(Math.random() * ARCADE_LINES.length)], 3400)
-          }
+          const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE)
+          if (spot) this.goTo(e.id, spot)
         }
       }
+      this._updateNpcAutonomy(e, dt)
       if (e.bubble && performance.now() > e.bubble.until) e.bubble = null
     }
     if (p.bubble && performance.now() > p.bubble.until) p.bubble = null
 
+    this.avatarEmotions.observe(p, {
+      now: this.t,
+      map: this.map,
+      activity: p.meta.activity,
+      handheld: !!p.meta.handheld?.active,
+      mounted: !!this.mountedVehicleId,
+      holding: !!this.heldObjectId,
+      playingGame: p.meta.playingGame
+    })
+    for (const e of this.agents.values()) {
+      if (!e.visible || (e.map && e.map !== this.map)) continue
+      this.avatarEmotions.observe(e, {
+        now: this.t,
+        map: this.map,
+        activity: e.meta.activity,
+        goal: e.autonomy?.currentGoal?.kind,
+        handheld: !!e.meta.handheld?.active,
+        playingGame: e.meta.playingGame
+      })
+    }
+
+    this._sampleAvatarWalk(p)
+    for (const e of this.agents.values()) {
+      if (e.visible && (!e.map || e.map === this.map)) this._sampleAvatarWalk(e)
+    }
+
+    if (this.moveMarker?.valid && !this.moveMarker.reachedAt && !p.path.length && Math.hypot(p.x - this.moveMarker.x, p.y - this.moveMarker.y) < 20) {
+      this.moveMarker.reachedAt = this.t
+      this.moveMarker.until = this.t + 520
+    }
+
+    if (this.reduceMotion) {
+      this.stepFx = []
+    } else {
+      this._emitStep(p)
+      for (const e of this.agents.values()) {
+        if (e.visible && (!e.map || e.map === this.map)) this._emitStep(e)
+      }
+      this.stepFx = this.stepFx.filter(fx => this.t - fx.born < fx.life)
+    }
+
+    const target = this.centerCamera(false)
+    const follow = this.reduceMotion ? 1 : 1 - Math.exp(-dt / 150)
+    this.camera.x += (target.x - this.camera.x) * follow
+    this.camera.y += (target.y - this.camera.y) * follow
+
     // --- interaction hint ---
     this._computeHint()
+  }
+
+  _sampleAvatarWalk(e) {
+    const mounted = e === this.player && !!this.mountedVehicleId
+    const reacting = !mounted && Number(e.meta?.reactionLockUntil || 0) > this.t
+    if (e === this.player && e.meta?.rideMotion) {
+      const motion = e.meta.rideMotion
+      if (!rideTransitionPose(motion, this.t, this.reduceMotion).active && (motion.phase === 'mount' || motion.phase === 'dismount')) {
+        delete e.meta.rideMotion
+      }
+    }
+    return sampleWalkFrame(e.walkAnimation, {
+      x: e.x,
+      y: e.y,
+      speed: e.speed,
+      moving: e.moving,
+      paused: this.reduceMotion || e.sitting || reacting
+    })
+  }
+
+  _emitStep(e) {
+    if (!e.moving || e.sitting) return
+    const riding = e === this.player && !!this.mountedVehicleId
+    let side
+    if (riding) {
+      if (this.t - (e.stepAt || 0) < 72) return
+      e.stepAt = this.t
+      e.stepSide = e.stepSide ? 0 : 1
+      side = e.stepSide ? 1 : -1
+    } else {
+      const contact = e.walkAnimation?.frame
+      if (contact !== 'stepL' && contact !== 'stepR') {
+        e.walkAnimation.lastContact = null
+        return
+      }
+      if (e.walkAnimation.lastContact === contact) return
+      e.walkAnimation.lastContact = contact
+      side = contact === 'stepL' ? -1 : 1
+    }
+    const horizontal = e.dir === 'left' || e.dir === 'right'
+    this.stepFx.push({
+      x: e.x + (horizontal ? 0 : side * 5),
+      y: e.y + (horizontal ? side * 2 : 2),
+      born: this.t, life: 430, map: this.map,
+      color: riding ? '101,232,190' : (e === this.player ? '122,105,242' : '255,255,255'),
+      ride: riding
+    })
+    if (this.stepFx.length > 72) this.stepFx.splice(0, this.stepFx.length - 72)
   }
 
   _computeHint() {
     let hint = null
     const p = this.player
     const ptx = Math.floor(p.x / T), pty = Math.floor(p.y / T)
-    if (this.map === 'office') {
+    if (!this.freezePlayer) {
+      const held = this.worldObject(this.heldObjectId)
+      const mounted = this.worldObject(this.mountedVehicleId)
+      if (held) {
+        hint = { type: 'heldProp', id: held.id, key: 'F', label: `${held.label} 던지기 · E 내려놓기` }
+      } else if (mounted) {
+        hint = { type: 'vehicleMounted', id: mounted.id, key: 'E', label: `${mounted.label}에서 내리기 · 속도 ${mounted.speed.toFixed(1)}` }
+      } else {
+        const nearby = this.worldObjects
+          .filter(o => o.map === this.map && !o.held && !o.mounted && o.z < 8 && Math.hypot(o.vx, o.vy) < .8)
+          .map(o => ({ o, d: Math.hypot(o.x - p.x, o.y - p.y) }))
+          .filter(({ d }) => d < T * 1.55)
+          .sort((a, b) => a.d - b.d)[0]?.o
+        if (isPocketStation(nearby)) hint = { type: 'handheld', id: nearby.id, key: 'E', label: 'DOTCADE POCKET · 게임팩 플레이' }
+        else if (nearby?.mountable) hint = { type: 'vehicle', id: nearby.id, key: 'E', label: `${nearby.label} 타기 · 이동 속도 UP` }
+        else if (nearby?.throwable) hint = { type: 'prop', id: nearby.id, key: 'E', label: `${nearby.label} 줍기 · F로 던지기` }
+      }
+    }
+    if (!hint && this.map === 'office') {
       // 회의실 존 — 근처로 가면 E로 바로 회의 시작 (HUD '회의 시작' 버튼과 동일)
       const mz = this.maps.office.meeting && this.maps.office.meeting.zone // [x, y, w, h]
       if (mz && !this.meetingMode) {
@@ -261,7 +1538,7 @@ export class Engine {
         const d = Math.hypot(e.x - p.x, e.y - p.y)
         if (d < T * 1.5 && d < bd) { bd = d; best = e }
       }
-      if (!hint && best) hint = { type: 'agent', id: best.id, label: `${best.meta.shortName || best.label}와 대화` }
+      if (!hint && best) hint = { type: 'agent', id: best.id, label: `${best.meta.shortName || best.label}과 대화` }
       const sh = this.maps.office.shelf
       if (!hint && sh) {
         // 진열대 본체 사방 1타일(위·옆·아래 어디서 접근해도) + 기존 front 타일 주변
@@ -274,7 +1551,7 @@ export class Engine {
       if (!hint && door.approach.concat(door.tiles).some(([x, y]) => Math.abs(x - ptx) + Math.abs(y - pty) <= 1)) {
         hint = { type: 'door', label: '오락실로 이동' }
       }
-    } else {
+    } else if (!hint) {
       const door = this.maps.arcade.door
       if (door.approach.concat(door.tiles).some(([x, y]) => Math.abs(x - ptx) + Math.abs(y - pty) <= 1)) {
         hint = { type: 'door', label: '사무실로 돌아가기' }
@@ -288,8 +1565,61 @@ export class Engine {
         }
       }
     }
-    const key = hint ? hint.type + (hint.id || '') : ''
+    this.currentHint = hint
+    this.interactionTarget = this._resolveInteractionTarget(hint)
+    const key = hint ? hint.type + (hint.id || '') + (hint.key || 'E') : ''
     if (key !== this._hintKey) { this._hintKey = key; this.onHint(hint) }
+  }
+
+  _resolveInteractionTarget(hint) {
+    if (!hint) return null
+    if (['vehicle', 'prop'].includes(hint.type)) {
+      const o = this.worldObject(hint.id)
+      return o ? {
+        type: hint.type, id: o.id, key: hint.key || 'E', x: o.x, y: o.y,
+        rx: o.mountable ? 28 : 20, ry: o.mountable ? 10 : 7,
+        lift: o.kind === 'bicycle' ? 48 : o.kind === 'scooter' ? 45 : o.kind === 'trashbin' ? 42 : 28
+      } : null
+    }
+    if (['vehicleMounted', 'heldProp'].includes(hint.type)) {
+      return {
+        type: hint.type, id: hint.id, key: hint.key || 'E', x: this.player.x, y: this.player.y,
+        rx: 24, ry: 8, lift: hint.type === 'heldProp' ? 102 : 90
+      }
+    }
+    if (hint.type === 'agent') {
+      const e = this.agents.get(hint.id)
+      return e ? { type: 'agent', id: e.id, key: 'E', x: e.x, y: e.y, rx: 23, ry: 9, lift: 78 } : null
+    }
+    if (hint.type === 'handheld' || hint.type === 'portable') {
+      const station = this.worldObject(hint.id || POCKET_STATION.id)
+      return station ? { type: 'handheld', id: station.id, key: 'E', x: station.x, y: station.y, rx: 31, ry: 11, lift: 86 } : null
+    }
+    if (hint.type === 'meeting') {
+      const z = this.maps.office.meeting?.zone
+      return z ? { type: 'meeting', x: (z[0] + z[2] / 2) * T, y: (z[1] + z[3] / 2) * T, rx: z[2] * T / 2 - 14, ry: z[3] * T / 2 - 14, lift: 28 } : null
+    }
+    if (hint.type === 'shelf') {
+      const sh = this.maps.office.shelf
+      const front = sh?.front || []
+      if (!front.length) return null
+      const sx = front.reduce((sum, p) => sum + p[0], 0) / front.length
+      const sy = front.reduce((sum, p) => sum + p[1], 0) / front.length
+      return { type: 'shelf', x: sx * T + T / 2, y: sy * T + T - 6, rx: Math.max(36, front.length * T / 2), ry: 13, lift: 30 }
+    }
+    if (hint.type === 'door') {
+      const door = this.maps[this.map].door
+      const spots = door?.approach || []
+      if (!spots.length) return null
+      const sx = spots.reduce((sum, p) => sum + p[0], 0) / spots.length
+      const sy = spots.reduce((sum, p) => sum + p[1], 0) / spots.length
+      return { type: 'door', x: sx * T + T / 2, y: sy * T + T - 6, rx: 38, ry: 13, lift: 32 }
+    }
+    if (hint.type === 'cabinet') {
+      const cab = this.maps.arcade.cabinets.find(c => c.id === hint.id)
+      return cab ? { type: 'cabinet', x: cab.spot[0] * T + T / 2, y: cab.spot[1] * T + T - 6, rx: 30, ry: 11, lift: 42 } : null
+    }
+    return null
   }
 
   // ---------- draw ----------
@@ -298,73 +1628,572 @@ export class Engine {
     ctx.imageSmoothingEnabled = false
     const bg = this.mapImg[this.map]
     ctx.fillStyle = '#0b0d16'; ctx.fillRect(0, 0, cv.width, cv.height)
-    if (bg) ctx.drawImage(bg, 0, 0)
+    ctx.save()
+    ctx.translate(cv.width / 2, cv.height / 2)
+    ctx.scale(this._renderScale(), this._renderScale())
+    ctx.translate(-this.camera.x, -this.camera.y)
+    if (bg) {
+      ctx.drawImage(bg, 0, 0)
+      this._eraseBakedVehicles(bg)
+    }
+
+    this._drawAmbientBack()
 
     if (this.map === 'arcade') this._drawCabinetScreens()
     if (this.map === 'office') this._drawShelfCartridges()
+    this._drawMovementGuides()
+    this._drawInteractionHalo()
+    this._drawStepFx()
+    this._drawImpactFx()
 
-    // entities sorted by y
+    // 캐릭터와 바닥 소품을 같은 y축으로 정렬해 자연스럽게 가려진다.
     const ents = [...this.agents.values()].filter(e => e.visible && (!e.map || e.map === this.map))
     ents.push(this.player)
-    ents.sort((a, b) => a.y - b.y)
-    for (const e of ents) this._drawEnt(e)
+    const scene = [
+      ...ents.map(e => ({ type: 'entity', y: e.y, value: e })),
+      ...this.worldObjects
+        .filter(o => o.map === this.map && !o.held && !o.mounted)
+        .map(o => ({ type: 'object', y: o.y, value: o }))
+    ].sort((a, b) => a.y - b.y)
+    for (const item of scene) {
+      if (item.type === 'entity') this._drawEnt(item.value)
+      else this._drawWorldObject(item.value)
+    }
     if (this.map === 'office') this._drawShelfSign()
     for (const e of ents) if (e.bubble) this._drawBubble(e)
+    this._drawInteractionKey()
+    ctx.restore()
+  }
 
-    // hint marker
-    if (this._hintKey) {
-      const p = this.player
-      ctx.font = 'bold 15px "Segoe UI", sans-serif'
-      const label = ' E '
-      ctx.fillStyle = 'rgba(20,22,40,.9)'
-      const w = 26
-      ctx.beginPath(); ctx.roundRect(p.x - w / 2, p.y - 118, w, 22, 6); ctx.fill()
-      ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 2; ctx.stroke()
-      ctx.fillStyle = '#ffd24a'; ctx.textAlign = 'center'
-      ctx.fillText('E', p.x, p.y - 102)
-      ctx.textAlign = 'left'
+  _drawAmbientBack() {
+    const { ctx } = this
+    const motionT = this.reduceMotion ? 0 : this.t
+    ctx.save()
+    ctx.globalCompositeOperation = 'screen'
+
+    if (this.map === 'office') {
+      // 창으로 들어오는 얕은 햇빛과 모니터의 청록색 글로우.
+      const windowXs = [564, 708, 852, 996]
+      for (let i = 0; i < windowXs.length; i++) {
+        const sway = Math.sin(motionT / 2100 + i) * 8
+        const x = windowXs[i]
+        const beam = ctx.createLinearGradient(0, 74, 0, 360)
+        beam.addColorStop(0, 'rgba(146,220,255,.15)')
+        beam.addColorStop(1, 'rgba(146,220,255,0)')
+        ctx.fillStyle = beam
+        ctx.beginPath()
+        ctx.moveTo(x - 27, 72); ctx.lineTo(x + 27, 72)
+        ctx.lineTo(x + 74 + sway, 354); ctx.lineTo(x - 70 + sway, 354)
+        ctx.closePath(); ctx.fill()
+      }
+
+      const monitors = [[744, 232], [984, 232], [1224, 184], [744, 472], [984, 472], [1224, 424]]
+      for (let i = 0; i < monitors.length; i++) {
+        const [x, y] = monitors[i]
+        const glow = ctx.createRadialGradient(x, y, 2, x, y, 54 + Math.sin(motionT / 800 + i) * 4)
+        glow.addColorStop(0, 'rgba(86,244,218,.22)')
+        glow.addColorStop(.45, 'rgba(86,210,244,.08)')
+        glow.addColorStop(1, 'rgba(86,210,244,0)')
+        ctx.fillStyle = glow; ctx.fillRect(x - 64, y - 54, 128, 108)
+      }
+
+      // 밝은 바닥에서만 보이는 느린 먼지 입자. reduced-motion에서는 정지한다.
+      for (let i = 0; i < 18; i++) {
+        const x = 58 + ((i * 193 + motionT * (.006 + (i % 3) * .002)) % 1320)
+        const y = 104 + ((i * 79 + motionT * (.004 + (i % 4) * .001)) % 760)
+        const a = .13 + ((i * 17) % 7) * .018
+        ctx.fillStyle = `rgba(255,250,218,${a.toFixed(3)})`
+        ctx.beginPath(); ctx.arc(x, y, i % 4 === 0 ? 2 : 1.2, 0, Math.PI * 2); ctx.fill()
+      }
+
+      if (this.meetingMode) {
+        const z = this.maps.office.meeting?.zone || [2, 3, 8, 6]
+        const x = z[0] * T + 8, y = z[1] * T + 8, w = z[2] * T - 16, h = z[3] * T - 16
+        const pulse = this.reduceMotion ? .3 : .24 + Math.sin(this.t / 420) * .07
+        ctx.fillStyle = `rgba(113,96,238,${pulse.toFixed(3)})`
+        ctx.beginPath(); ctx.roundRect(x, y, w, h, 32); ctx.fill()
+        ctx.strokeStyle = 'rgba(201,193,255,.72)'; ctx.lineWidth = 3
+        ctx.beginPath(); ctx.roundRect(x + 3, y + 3, w - 6, h - 6, 29); ctx.stroke()
+      }
+    } else {
+      const neon = this.reduceMotion ? .2 : .17 + Math.sin(this.t / 330) * .06
+      ctx.fillStyle = `rgba(255,76,190,${neon.toFixed(3)})`
+      ctx.fillRect(22, 95, WORLD_W - 44, 12)
+      for (const c of this.maps.arcade.cabinets) {
+        const [sx, sy, ex, ey] = c.screen
+        const cx = (sx + ex) / 2, cy = (sy + ey) / 2
+        const glow = ctx.createRadialGradient(cx, cy, 5, cx, cy, this.simMode ? 86 : 62)
+        glow.addColorStop(0, `rgba(112,220,255,${this.simMode ? .28 : .15})`)
+        glow.addColorStop(1, 'rgba(112,220,255,0)')
+        ctx.fillStyle = glow; ctx.fillRect(cx - 90, cy - 90, 180, 180)
+      }
+      if (this.simMode) {
+        const floorPulse = this.reduceMotion ? .12 : .1 + Math.sin(this.t / 240) * .055
+        ctx.fillStyle = `rgba(120,100,255,${floorPulse.toFixed(3)})`
+        ctx.beginPath(); ctx.roundRect(552, 268, 340, 185, 22); ctx.fill()
+      }
     }
+    ctx.restore()
+  }
+
+  _drawMovementGuides() {
+    const { ctx } = this
+    if (this.hoverTile && !this.freezePlayer && !this.moveMarker) {
+      const h = this.hoverTile
+      ctx.save()
+      ctx.strokeStyle = h.walkable ? 'rgba(255,255,255,.32)' : 'rgba(255,104,126,.36)'
+      ctx.lineWidth = 1.5
+      ctx.beginPath(); ctx.ellipse(h.x, h.y + 1, 14, 5, 0, 0, Math.PI * 2); ctx.stroke()
+      ctx.restore()
+    }
+
+    const m = this.moveMarker
+    if (!m) return
+    if (this.t >= m.until) { this.moveMarker = null; return }
+    const total = Math.max(1, m.until - m.started)
+    const life = Math.max(0, Math.min(1, (m.until - this.t) / total))
+    const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 105) * 2.5
+    ctx.save()
+    if (m.valid && this.player.path.length) {
+      ctx.strokeStyle = 'rgba(184,175,255,.42)'; ctx.lineWidth = 2
+      ctx.setLineDash([3, 8]); ctx.lineDashOffset = this.reduceMotion ? 0 : -this.t / 70
+      ctx.beginPath(); ctx.moveTo(this.player.x, this.player.y)
+      for (const [tx, ty] of this.player.path) ctx.lineTo(tx * T + T / 2, ty * T + T - 6)
+      ctx.stroke(); ctx.setLineDash([])
+    }
+    if (!m.valid) {
+      ctx.strokeStyle = `rgba(255,91,119,${(.35 + life * .65).toFixed(3)})`; ctx.lineWidth = 3
+      ctx.beginPath(); ctx.ellipse(m.x, m.y, 17 + pulse, 7 + pulse * .3, 0, 0, Math.PI * 2); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(m.x - 5, m.y - 5); ctx.lineTo(m.x + 5, m.y + 5)
+      ctx.moveTo(m.x + 5, m.y - 5); ctx.lineTo(m.x - 5, m.y + 5); ctx.stroke()
+    } else {
+      const reached = !!m.reachedAt
+      ctx.fillStyle = reached ? 'rgba(86,220,149,.2)' : 'rgba(122,105,242,.16)'
+      ctx.strokeStyle = reached ? 'rgba(112,244,171,.95)' : 'rgba(255,255,255,.9)'
+      ctx.lineWidth = 2.5
+      ctx.beginPath(); ctx.ellipse(m.x, m.y, 15 + pulse, 6 + pulse * .3, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+      if (!reached) {
+        ctx.fillStyle = '#fff'
+        ctx.beginPath(); ctx.moveTo(m.x, m.y - 18 - pulse); ctx.lineTo(m.x - 5, m.y - 26 - pulse); ctx.lineTo(m.x + 5, m.y - 26 - pulse); ctx.closePath(); ctx.fill()
+      }
+    }
+    ctx.restore()
+  }
+
+  _drawStepFx() {
+    const { ctx } = this
+    for (const fx of this.stepFx) {
+      if (fx.map !== this.map) continue
+      const p = Math.max(0, Math.min(1, (this.t - fx.born) / fx.life))
+      ctx.fillStyle = `rgba(${fx.color},${((1 - p) * .26).toFixed(3)})`
+      ctx.beginPath(); ctx.ellipse(fx.x, fx.y - p * (fx.ride ? 2 : 5), (fx.ride ? 6 : 3) + p * 5, (fx.ride ? 2 : 1.5) + p * 2, 0, 0, Math.PI * 2); ctx.fill()
+    }
+  }
+
+  _drawImpactFx() {
+    const { ctx } = this
+    for (const fx of this.impactFx) {
+      if (fx.map !== this.map) continue
+      const p = Math.max(0, Math.min(1, (this.t - fx.born) / fx.life))
+      const a = 1 - p
+      ctx.save()
+      ctx.globalAlpha = a
+      ctx.strokeStyle = fx.color
+      ctx.fillStyle = fx.color
+      ctx.lineWidth = fx.kind === 'whoosh' ? 2 : 3
+      if (fx.kind === 'whoosh') {
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath(); ctx.moveTo(fx.x - 5, fx.y + i * 5); ctx.lineTo(fx.x - 19 - p * 13, fx.y + i * 7); ctx.stroke()
+        }
+      } else {
+        for (let i = 0; i < 6; i++) {
+          const angle = i * Math.PI / 3 + .22
+          const r0 = 5 + p * 7, r1 = 11 + p * 15
+          ctx.beginPath()
+          ctx.moveTo(fx.x + Math.cos(angle) * r0, fx.y + Math.sin(angle) * r0 * .48)
+          ctx.lineTo(fx.x + Math.cos(angle) * r1, fx.y + Math.sin(angle) * r1 * .48)
+          ctx.stroke()
+        }
+        ctx.beginPath(); ctx.ellipse(fx.x, fx.y, 6 + p * 13, 2 + p * 5, 0, 0, Math.PI * 2); ctx.stroke()
+      }
+      ctx.restore()
+    }
+  }
+
+  _drawWorldObject(o) {
+    const { ctx } = this
+    if (isPocketStation(o)) {
+      drawPocketStation(ctx, o, this.t, this.reduceMotion)
+      return
+    }
+    if (o.mountable) {
+      this._drawVehicle(o, o.x, o.y, o.dir, false)
+      return
+    }
+    const airY = o.y - o.z
+    ctx.save()
+    if (!o.held) {
+      const shadowScale = Math.max(.42, 1 - o.z / 100)
+      ctx.fillStyle = `rgba(16,15,25,${(.26 * shadowScale).toFixed(3)})`
+      ctx.beginPath(); ctx.ellipse(o.x, o.y + 2, (o.kind === 'trashbin' ? 13 : 11) * shadowScale, 4 * shadowScale, 0, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.translate(o.x, airY)
+    ctx.rotate(o.kind === 'book' ? o.spin : Math.sin(o.spin) * .16)
+    if (o.kind === 'book') {
+      ctx.fillStyle = '#252336'; ctx.fillRect(-13, -13, 27, 20)
+      ctx.fillStyle = o.color; ctx.fillRect(-14, -15, 26, 19)
+      ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.fillRect(-9, -11, 16, 3); ctx.fillRect(-9, -5, 11, 2)
+      ctx.fillStyle = '#f7e9c8'; ctx.fillRect(-11, 5, 25, 3)
+      ctx.fillStyle = '#ff6688'; ctx.fillRect(7, -15, 3, 9)
+    } else {
+      ctx.fillStyle = 'rgba(16,18,28,.3)'; ctx.fillRect(-13, -23, 28, 28)
+      ctx.fillStyle = o.color; ctx.fillRect(-14, -26, 27, 28)
+      ctx.fillStyle = 'rgba(255,255,255,.28)'; ctx.fillRect(-10, -22, 4, 20)
+      ctx.fillStyle = '#394454'; ctx.fillRect(-17, -29, 33, 5); ctx.fillRect(-11, 2, 5, 4); ctx.fillRect(6, 2, 5, 4)
+      ctx.strokeStyle = 'rgba(33,42,55,.65)'; ctx.lineWidth = 2
+      ctx.beginPath(); ctx.moveTo(-8, -17); ctx.lineTo(-7, -2); ctx.moveTo(0, -17); ctx.lineTo(0, -2); ctx.moveTo(8, -17); ctx.lineTo(7, -2); ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  _eraseBakedVehicles(bg) {
+    // ImageGen supplied richly textured maps with parked vehicles. Copy nearby
+    // floor texture over those pixels so the runtime vehicle can truly leave its
+    // parking spot when mounted (and return when the rider dismounts).
+    const { ctx } = this
+    if (this.map === 'office') {
+      ctx.drawImage(bg, 780, 700, 170, 125, 950, 700, 170, 125)
+      ctx.drawImage(bg, 790, 700, 125, 115, 1185, 700, 125, 115)
+    } else {
+      ctx.drawImage(bg, 700, 685, 190, 155, 920, 685, 190, 155)
+    }
+  }
+
+  _drawVehicle(o, x, y, dir = 'right', riding = false) {
+    const { ctx } = this
+    const flip = dir === 'left' ? -1 : 1
+    const narrow = dir === 'up' || dir === 'down'
+    ctx.save()
+    ctx.translate(x, y)
+    ctx.scale(flip * (narrow ? .78 : 1), 1)
+    if (riding && this.player.moving && !this.reduceMotion) {
+      ctx.strokeStyle = `${o.color}aa`; ctx.lineWidth = 2
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath(); ctx.moveTo(-22 - i * 5, -3 + i * 4); ctx.lineTo(-37 - i * 8, -3 + i * 4); ctx.stroke()
+      }
+    }
+    ctx.fillStyle = 'rgba(16,15,25,.3)'
+    ctx.beginPath(); ctx.ellipse(0, 3, o.kind === 'bicycle' ? 27 : 23, 5, 0, 0, Math.PI * 2); ctx.fill()
+    if (o.kind === 'bicycle') {
+      const wheelPhase = riding && this.player.moving && !this.reduceMotion ? this.t / 72 : 0
+      for (const wx of [-17, 17]) {
+        ctx.strokeStyle = '#242a38'; ctx.lineWidth = 5
+        ctx.beginPath(); ctx.arc(wx, -1, 9, 0, Math.PI * 2); ctx.stroke()
+        ctx.strokeStyle = '#d8f3f1'; ctx.lineWidth = 1.5
+        ctx.beginPath(); ctx.arc(wx, -1, 7, 0, Math.PI * 2); ctx.stroke()
+        ctx.strokeStyle = 'rgba(216,243,241,.62)'; ctx.lineWidth = 1
+        for (let spoke = 0; spoke < 4; spoke++) {
+          const angle = wheelPhase + spoke * Math.PI / 2
+          ctx.beginPath(); ctx.moveTo(wx, -1)
+          ctx.lineTo(wx + Math.cos(angle) * 6.5, -1 + Math.sin(angle) * 6.5); ctx.stroke()
+        }
+      }
+      ctx.strokeStyle = o.color; ctx.lineWidth = 4; ctx.lineJoin = 'bevel'
+      ctx.beginPath(); ctx.moveTo(-17, -1); ctx.lineTo(-5, -17); ctx.lineTo(5, -1); ctx.lineTo(-17, -1); ctx.lineTo(-2, -1); ctx.lineTo(11, -17); ctx.lineTo(17, -1); ctx.stroke()
+      ctx.fillStyle = '#303344'; ctx.fillRect(-10, -20, 12, 4)
+      ctx.strokeStyle = '#dce9ef'; ctx.lineWidth = 3
+      ctx.beginPath(); ctx.moveTo(11, -17); ctx.lineTo(15, -24); ctx.lineTo(21, -24); ctx.stroke()
+      if (riding) {
+        const pedal = this.player.moving && !this.reduceMotion ? this.t / 86 : 0
+        ctx.strokeStyle = '#242a38'; ctx.lineWidth = 2
+        ctx.beginPath(); ctx.arc(0, -3, 3.5, 0, Math.PI * 2); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(Math.cos(pedal) * 6, -3 + Math.sin(pedal) * 4); ctx.stroke()
+        ctx.fillStyle = o.color
+        ctx.fillRect(Math.cos(pedal) * 6 - 2, -5 + Math.sin(pedal) * 4, 5, 4)
+        ctx.fillRect(-Math.cos(pedal) * 6 - 2, -5 - Math.sin(pedal) * 4, 5, 4)
+      }
+    } else {
+      for (const wx of [-14, 14]) {
+        ctx.fillStyle = '#242a38'; ctx.beginPath(); ctx.arc(wx, 0, 6, 0, Math.PI * 2); ctx.fill()
+        ctx.fillStyle = '#d8f3f1'; ctx.beginPath(); ctx.arc(wx, 0, 2, 0, Math.PI * 2); ctx.fill()
+      }
+      ctx.fillStyle = o.color; ctx.fillRect(-17, -5, 30, 7)
+      ctx.strokeStyle = o.color; ctx.lineWidth = 4
+      ctx.beginPath(); ctx.moveTo(10, -4); ctx.lineTo(12, -29); ctx.stroke()
+      ctx.fillStyle = '#303344'; ctx.fillRect(7, -31, 14, 4)
+      ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.fillRect(-11, -3, 17, 2)
+    }
+    ctx.restore()
+  }
+
+  _drawRiderGrip(o, e, ridingLift, pose, rideLean = 0) {
+    const { ctx } = this
+    const flip = e.dir === 'left' ? -1 : 1
+    const narrow = e.dir === 'up' || e.dir === 'down'
+    const settle = e.meta?.rideMotion?.phase === 'mount' ? pose.liftMix : 1
+    if (settle < .32) return
+    const handleX = o.kind === 'bicycle' ? 18 : 13
+    const handleY = o.kind === 'bicycle' ? -24 : -29
+    const shoulderY = -31 - ridingLift * .28
+
+    ctx.save()
+    ctx.translate(e.x + pose.offsetX, e.y + pose.hop)
+    ctx.rotate(pose.rotation + rideLean)
+    ctx.scale(flip * (narrow ? .78 : 1), 1)
+    ctx.globalAlpha = Math.min(1, settle * 1.35)
+    ctx.strokeStyle = '#233554'
+    ctx.lineWidth = 4
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(1, shoulderY)
+    ctx.quadraticCurveTo(8, shoulderY + 4, handleX - 1, handleY)
+    ctx.stroke()
+    ctx.fillStyle = '#f2bd91'
+    ctx.beginPath(); ctx.arc(handleX, handleY, 2.4, 0, Math.PI * 2); ctx.fill()
+    if (narrow) {
+      ctx.beginPath(); ctx.arc(handleX - 7, handleY + 1, 2.2, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.restore()
+  }
+
+  _drawRiderDrive(o, e, ridingLift, pose) {
+    const { ctx } = this
+    const flip = e.dir === 'left' ? -1 : 1
+    const narrow = e.dir === 'up' || e.dir === 'down'
+    const settle = e.meta?.rideMotion?.phase === 'mount' ? pose.liftMix : 1
+    if (settle < .24) return
+    const moving = e.moving && !this.reduceMotion
+
+    ctx.save()
+    ctx.translate(e.x + pose.offsetX, e.y + pose.hop)
+    ctx.rotate(pose.rotation)
+    ctx.scale(flip * (narrow ? .74 : 1), 1)
+    ctx.globalAlpha = Math.min(1, settle * 1.45)
+    ctx.strokeStyle = '#283859'
+    ctx.fillStyle = '#1f2a43'
+    ctx.lineCap = 'round'
+
+    if (o.kind === 'bicycle') {
+      const phase = moving ? this.t / 86 : Math.PI / 4
+      for (const side of [-1, 1]) {
+        const pedalX = Math.cos(phase + (side < 0 ? 0 : Math.PI)) * 6
+        const pedalY = -3 + Math.sin(phase + (side < 0 ? 0 : Math.PI)) * 4
+        const hipX = side * 3
+        const hipY = -18 - ridingLift * .18
+        const kneeX = hipX + pedalX * .38 + side * 2
+        const kneeY = -11 + Math.abs(Math.sin(phase + side)) * 2
+        ctx.lineWidth = 4.2
+        ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(kneeX, kneeY); ctx.lineTo(pedalX, pedalY); ctx.stroke()
+        ctx.save(); ctx.translate(pedalX, pedalY); ctx.rotate(Math.sin(phase + side) * .12)
+        ctx.fillStyle = '#252a35'; ctx.fillRect(-4, -1.7, 8, 3.4); ctx.restore()
+      }
+    } else {
+      const kick = moving ? (Math.sin(this.t / 105) + 1) / 2 : 0
+      // One foot stays on the deck while the other pushes backward and returns.
+      ctx.lineWidth = 4.4
+      ctx.beginPath(); ctx.moveTo(-3, -17); ctx.lineTo(-5, -9); ctx.lineTo(-1, -5); ctx.stroke()
+      ctx.fillStyle = '#252a35'; ctx.fillRect(-5, -7, 10, 3.5)
+      const kneeX = 4 + kick * 4
+      const footX = 5 - kick * 13
+      const footY = -3 + Math.sin(kick * Math.PI) * 4
+      ctx.strokeStyle = '#35486d'
+      ctx.beginPath(); ctx.moveTo(3, -17); ctx.lineTo(kneeX, -10); ctx.lineTo(footX, footY); ctx.stroke()
+      ctx.save(); ctx.translate(footX, footY); ctx.rotate(-kick * .18)
+      ctx.fillStyle = '#252a35'; ctx.fillRect(-3, -2, 9, 3.5); ctx.restore()
+    }
+    ctx.restore()
+  }
+
+  _drawInteractionHalo() {
+    const { ctx } = this
+    const a = this.interactionTarget
+    if (!a || a.type === 'agent') return
+    const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 150) * 2
+    ctx.save()
+    ctx.fillStyle = 'rgba(107,229,166,.09)'
+    ctx.strokeStyle = 'rgba(134,246,187,.88)'
+    ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.ellipse(a.x, a.y, a.rx + pulse, a.ry + pulse * .35, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+    ctx.restore()
+  }
+
+  _drawInteractionKey() {
+    const { ctx } = this
+    const a = this.interactionTarget
+    if (!a) return
+    const lift = a.type === 'agent' ? a.lift : Math.max(28, a.lift || 28)
+    const y = a.y - lift + (this.reduceMotion ? 0 : Math.sin(this.t / 190) * 2)
+    ctx.save()
+    ctx.shadowColor = 'rgba(15,15,24,.28)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4
+    ctx.fillStyle = 'rgba(31,31,38,.96)'
+    ctx.beginPath(); ctx.roundRect(a.x - 16, y - 12, 32, 27, 9); ctx.fill()
+    ctx.shadowColor = 'transparent'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke()
+    ctx.fillStyle = '#ffffff'; ctx.font = '800 15px "Segoe UI", sans-serif'; ctx.textAlign = 'center'
+    ctx.fillText(a.key || 'E', a.x, y + 7); ctx.textAlign = 'left'
+    ctx.restore()
   }
 
   _drawEnt(e) {
     const { ctx } = this
     const set = this.images[e.sprite]
     const img = set && (set[e.dir] || set.down)
-    const bob = e.moving ? Math.sin(this.t / 55) * 2.5 : (e.sitting ? 0 : Math.sin(this.t / 480 + e.x) * 0.8)
-    // shadow
-    ctx.fillStyle = 'rgba(16,12,24,.32)'
-    ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, 16, 6, 0, 0, Math.PI * 2); ctx.fill()
-    if (img) {
-      const w = img.width, h = img.height
-      ctx.drawImage(img, Math.round(e.x - w / 2), Math.round(e.y - h + 4 + bob))
-    } else {
-      ctx.fillStyle = e.color; ctx.fillRect(e.x - 12, e.y - 40, 24, 40)
+    const walkSheet = this.walkSheets[e.sprite]
+    const isPlayer = e === this.player
+    const mounted = isPlayer ? this.worldObject(this.mountedVehicleId) : null
+    const held = isPlayer ? this.worldObject(this.heldObjectId) : null
+    const rideMotion = isPlayer ? e.meta?.rideMotion : null
+    const ridePose = rideTransitionPose(rideMotion, this.t, this.reduceMotion)
+    const rideKind = mounted?.kind || rideMotion?.kind || null
+    const walkFrame = e.walkAnimation?.frame || 'idle'
+    const useRideSheet = !!(walkSheet && mounted && e.moving && !this.reduceMotion)
+    const useWalkSheet = !!(walkSheet && e.moving && !e.sitting && !mounted && !this.reduceMotion)
+    const useMotionSheet = useWalkSheet || useRideSheet
+    const source = useMotionSheet ? sheetSource(e.dir, walkFrame) : null
+    const sourceW = source?.width || img?.width
+    const sourceH = source?.height || img?.height
+    const targetH = e.sitting ? 62 : (isPlayer ? (mounted ? (rideKind === 'bicycle' ? 66 : 72) : 76) : 70)
+    const targetW = 47
+    const scale = sourceW && sourceH ? Math.min(targetH / sourceH, targetW / sourceW) : 1
+    const drawW = sourceW ? Math.max(1, Math.round(sourceW * scale)) : 28
+    const drawH = sourceH ? Math.max(1, Math.round(sourceH * scale)) : 48
+    const frameStride = walkFrame === 'stepL' ? -1 : walkFrame === 'stepR' ? 1 : 0
+    const fallbackStride = !this.reduceMotion && e.moving ? Math.sin(this.t / 62 + e.x * .015) : 0
+    const stride = useMotionSheet ? frameStride : fallbackStride
+    // The new contact frames carry the gait. Keep only a tiny pass-pose lift;
+    // the previous 3px sine bob made every avatar look like it was skating.
+    const bob = this.reduceMotion
+      ? 0
+      : useMotionSheet
+        ? (walkFrame === 'idle' ? -0.65 : 0)
+        : e.moving
+          ? Math.abs(stride) * -2
+          : (e.sitting ? 0 : Math.sin(this.t / 520 + e.x) * .7)
+    const stepX = !useMotionSheet && e.moving && (e.dir === 'up' || e.dir === 'down') ? stride * .65 : 0
+    const isTarget = this.interactionTarget?.type === 'agent' && this.interactionTarget.id === e.id
+    const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 145) * 1.6
+    const baseRideLift = rideKind === 'bicycle' ? 9 : rideKind === 'scooter' ? 3 : 0
+    const ridingLift = mounted
+      ? baseRideLift * (rideMotion?.phase === 'mount' ? ridePose.liftMix : 1)
+      : rideMotion?.phase === 'dismount' ? baseRideLift * ridePose.liftMix : 0
+    const rideLean = mounted && e.moving && (e.dir === 'left' || e.dir === 'right')
+      ? (e.dir === 'right' ? 1 : -1) * (rideKind === 'bicycle' ? .032 : .018)
+      : 0
+    const reactionMotion = isPlayer
+      ? { x: 0, y: 0, rotation: 0 }
+      : this.npcReactions.visualOffset(e, this.t, this.reduceMotion)
+
+    if (isTarget) {
+      ctx.fillStyle = 'rgba(102,229,162,.13)'
+      ctx.strokeStyle = 'rgba(131,247,186,.96)'; ctx.lineWidth = 2.5
+      ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 22 + pulse, 8 + pulse * .3, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
     }
+    // shadow
+    ctx.fillStyle = isPlayer ? 'rgba(20,15,36,.34)' : 'rgba(18,14,26,.27)'
+    ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, Math.max(10, drawW * (.36 - Math.abs(stride) * .035)), 4.6 - Math.abs(stride) * .4, 0, 0, Math.PI * 2); ctx.fill()
+    if (isPlayer) {
+      ctx.fillStyle = 'rgba(99,82,219,.12)'
+      ctx.strokeStyle = 'rgba(255,255,255,.96)'; ctx.lineWidth = 3
+      ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 19 + pulse * .35, 7.5 + pulse * .12, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+      ctx.strokeStyle = 'rgba(124,105,242,.95)'; ctx.lineWidth = 2
+      ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 14.5, 5.3, 0, 0, Math.PI * 2); ctx.stroke()
+    }
+    if (mounted) {
+      this._drawVehicle(mounted, e.x, e.y, e.dir, true)
+      this._drawRiderDrive(mounted, e, ridingLift, ridePose)
+    }
+    if (img || useMotionSheet) {
+      ctx.save()
+      ctx.translate(
+        Math.round(e.x + reactionMotion.x + ridePose.offsetX),
+        Math.round(e.y + reactionMotion.y + ridePose.hop)
+      )
+      ctx.rotate(reactionMotion.rotation + ridePose.rotation + rideLean)
+      ctx.scale(
+        (reactionMotion.scaleX ?? 1) * ridePose.scaleX,
+        (reactionMotion.scaleY ?? 1) * ridePose.scaleY
+      )
+      if (useMotionSheet) {
+        ctx.drawImage(
+          walkSheet,
+          source.x, source.y, AVATAR_FRAME.width, AVATAR_FRAME.height,
+          Math.round(-drawW / 2), Math.round(-drawH + 4 + bob - ridingLift), drawW, drawH
+        )
+      } else {
+        ctx.drawImage(img, Math.round(-drawW / 2 + stepX), Math.round(-drawH + 4 + bob - ridingLift), drawW, drawH)
+      }
+      ctx.restore()
+    } else {
+      ctx.fillStyle = e.color
+      ctx.fillRect(e.x - 12 + reactionMotion.x, e.y - 40 - ridingLift + reactionMotion.y, 24, 40)
+    }
+    if (mounted) this._drawRiderGrip(mounted, e, ridingLift, ridePose, rideLean)
+    drawAgentHandheld(ctx, e, {
+      drawW,
+      drawH,
+      bob,
+      time: this.t,
+      reduceMotion: this.reduceMotion,
+      visualOffset: reactionMotion
+    })
+    if (held) this._drawWorldObject(held)
+    if (!isPlayer) this.npcReactions.draw(ctx, e, this.t, {
+      spriteHeight: drawH,
+      reduceMotion: this.reduceMotion,
+      faceImage: set?.face || null
+    })
+    this.avatarEmotions.draw(ctx, e, this.t, {
+      spriteHeight: drawH + ridingLift,
+      drawWidth: drawW,
+      bob,
+      reduceMotion: this.reduceMotion,
+      faceImage: set?.face || null
+    })
     // speaking ring
     if (e.meta && e.meta.speaking) {
-      ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 3
-      ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, 20, 8, 0, 0, Math.PI * 2); ctx.stroke()
+      const speakPulse = this.reduceMotion ? 0 : Math.sin(this.t / 105) * 2
+      ctx.strokeStyle = 'rgba(255,210,74,.94)'; ctx.lineWidth = 2.5
+      ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, 18 + speakPulse, 6.4 + speakPulse * .3, 0, 0, Math.PI * 2); ctx.stroke()
+      this._drawEmote(e, drawW, drawH, bob)
     }
     // label
-    const isPlayer = e === this.player
-    ctx.font = `bold 13px "Segoe UI", sans-serif`
-    const name = isPlayer ? e.label || '나 (팀장)' : e.label
+    ctx.font = `700 14px "Segoe UI", "Apple SD Gothic Neo", sans-serif`
+    const name = isPlayer
+      ? mounted ? `나 · ${mounted.kind === 'bicycle' ? '🚲' : '🛴'}` : held ? `나 · ${held.kind === 'book' ? '📘' : '🗑️'}` : '나'
+      : (e.meta?.shortName || e.label)
     if (name) {
       const tw = ctx.measureText(name).width
-      ctx.fillStyle = 'rgba(16,18,34,.72)'
-      ctx.beginPath(); ctx.roundRect(e.x - tw / 2 - 6, e.y + 8, tw + 12, 18, 5); ctx.fill()
-      ctx.fillStyle = isPlayer ? '#ffd24a' : (e.color || '#fff')
-      ctx.textAlign = 'center'; ctx.fillText(name, e.x, e.y + 21); ctx.textAlign = 'left'
+      const chipW = tw + 25
+      ctx.fillStyle = isPlayer ? 'rgba(92,76,194,.96)' : 'rgba(31,31,39,.88)'
+      ctx.beginPath(); ctx.roundRect(e.x - chipW / 2, e.y + 9, chipW, 23, 9); ctx.fill()
+      ctx.fillStyle = isPlayer ? '#b9f5d0' : (e.color || '#72dfa0')
+      ctx.beginPath(); ctx.arc(e.x - tw / 2 - 6, e.y + 20, 3, 0, Math.PI * 2); ctx.fill()
+      ctx.fillStyle = '#ffffff'
+      ctx.textAlign = 'center'; ctx.fillText(name, e.x + 4, e.y + 25); ctx.textAlign = 'left'
     }
+  }
+
+  _drawEmote(e, drawW, drawH, bob) {
+    const { ctx } = this
+    const x = e.x + drawW / 2 + 5
+    const y = e.y - drawH + 16 + bob
+    ctx.save()
+    ctx.strokeStyle = 'rgba(255,222,104,.96)'; ctx.lineWidth = 2; ctx.lineCap = 'round'
+    const phase = this.reduceMotion ? 0 : (this.t / 180) % 1
+    for (let i = 0; i < 3; i++) {
+      const r = 3 + i * 4 + phase * 2
+      ctx.globalAlpha = Math.max(.18, .9 - i * .24 - phase * .2)
+      ctx.beginPath(); ctx.arc(x, y, r, -1.05, 1.05); ctx.stroke()
+    }
+    ctx.restore()
   }
 
   _drawBubble(e) {
     const { ctx } = this
     const set = this.images[e.sprite]
-    const h = set && set.down ? set.down.height : 96
+    const h = e.sitting ? 62 : (e === this.player ? 72 : 68)
     let text = e.bubble.text
     if (text.length > 64) text = text.slice(0, 63) + '…'
-    ctx.font = '14px "Segoe UI", sans-serif'
+    ctx.font = '15px "Segoe UI", "Apple SD Gothic Neo", sans-serif'
     const maxW = 230
     const lines = []
     let line = ''
@@ -375,18 +2204,24 @@ export class Engine {
     }
     if (line && lines.length < 3) lines.push(line)
     const w = Math.min(maxW, Math.max(...lines.map(l => ctx.measureText(l).width))) + 18
-    const bh = lines.length * 19 + 12
+    const bh = lines.length * 20 + 14
     let bx = e.x - w / 2, by = e.y - h - bh - 10
-    bx = Math.max(6, Math.min(this.cv.width - w - 6, bx))
-    by = Math.max(6, by)
-    ctx.fillStyle = 'rgba(255,255,255,.96)'
-    ctx.strokeStyle = 'rgba(30,32,55,.9)'; ctx.lineWidth = 2
-    ctx.beginPath(); ctx.roundRect(bx, by, w, bh, 8); ctx.fill(); ctx.stroke()
+    const scale = this._renderScale()
+    const viewLeft = this.camera.x - this.cv.width / (2 * scale)
+    const viewRight = this.camera.x + this.cv.width / (2 * scale)
+    const viewTop = this.camera.y - this.cv.height / (2 * scale)
+    const viewBottom = this.camera.y + this.cv.height / (2 * scale)
+    bx = Math.max(viewLeft + 6, Math.min(viewRight - w - 6, bx))
+    by = Math.max(viewTop + 6, Math.min(viewBottom - bh - 12, by))
+    ctx.save(); ctx.shadowColor = 'rgba(15,15,24,.28)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 5
+    ctx.fillStyle = 'rgba(255,255,255,.98)'
+    ctx.strokeStyle = 'rgba(35,35,44,.22)'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.roundRect(bx, by, w, bh, 12); ctx.fill(); ctx.stroke(); ctx.restore()
     ctx.beginPath()
     ctx.moveTo(e.x - 6, by + bh); ctx.lineTo(e.x + 6, by + bh); ctx.lineTo(e.x, by + bh + 8); ctx.closePath()
-    ctx.fillStyle = 'rgba(255,255,255,.96)'; ctx.fill()
-    ctx.fillStyle = '#1c2136'
-    lines.forEach((l, i) => ctx.fillText(l, bx + 9, by + 20 + i * 19))
+    ctx.fillStyle = 'rgba(255,255,255,.98)'; ctx.fill()
+    ctx.fillStyle = '#262630'
+    lines.forEach((l, i) => ctx.fillText(l, bx + 9, by + 21 + i * 20))
   }
 
   _drawCabinetScreens() {
