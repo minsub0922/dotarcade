@@ -207,9 +207,16 @@ app.post('/api/games/:id/feedback', (req, res) => {
   const { db } = req.p
   const g = db.game(req.params.id)
   if (!g) return res.status(404).json({ error: 'not found' })
-  const { version, reports, summary, avg, ratings } = req.body
+  const { runId, version, reports, summary, avg, ratings } = req.body
   const now = new Date().toISOString()
-  g.feedback[version || g.version] = { reports: reports || [], summary: summary || '', avg: avg ?? null, ratings: ratings || null, at: now }
+  const feedbackVersion = version || g.version
+  g.feedback ||= {}
+  const previous = g.feedback[feedbackVersion]
+  if (runId && previous?.runId === runId) {
+    return res.json({ ok: true, version: feedbackVersion, feedback: previous, stats: g.stats || null, duplicate: true })
+  }
+  const feedback = { runId: runId || null, reports: reports || [], summary: summary || '', avg: avg ?? null, ratings: ratings || null, at: now }
+  g.feedback[feedbackVersion] = feedback
 
   // ---- 6축 평가 누적 통계: 시뮬레이션을 돌릴수록 합산 (합계/표본수 보존 → 정확한 누적 평균) ----
   const rated = (reports || []).map(r => r && r.ratings).filter(r => r && typeof r === 'object')
@@ -231,11 +238,12 @@ app.post('/api/games/:id/feedback', (req, res) => {
     }
     st.ratings = Object.fromEntries(Object.keys(st.sums).map(k => [k, +(st.sums[k] / (st.counts[k] || 1)).toFixed(1)]))
     st.avgScore = st.scoreN ? +(st.scoreSum / st.scoreN).toFixed(1) : null
-    st.history = [...(st.history || []), { at: now, version: version || g.version, n: rated.length, avg: avg ?? null, ratings: ratings || null }].slice(-20)
+    st.history = [...(st.history || []), { at: now, version: feedbackVersion, n: rated.length, avg: avg ?? null, ratings: ratings || null }].slice(-20)
   }
 
-  db.save()
-  res.json({ ok: true, stats: g.stats || null })
+  // 저장 완료 응답 전에 디스크까지 반영한다. 클라이언트는 이 ACK 뒤에만 run을 done으로 전환한다.
+  db.flush()
+  res.json({ ok: true, version: feedbackVersion, feedback, stats: g.stats || null })
 })
 
 app.delete('/api/games/:id', (req, res) => {

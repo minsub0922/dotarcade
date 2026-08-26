@@ -3,7 +3,7 @@ export const CRITERIA = [
   { key: 'fun', label: '재미', desc: '핵심 루프가 즐겁고 계속 하고 싶은가' },
   { key: 'controls', label: '조작감', desc: '입력 반응성과 손맛' },
   { key: 'balance', label: '밸런스', desc: '난이도 곡선이 공정하고 적절한가' },
-  { key: 'graphics', label: '그래픽', desc: '도트 아트 완성도와 피드백 연출' },
+  { key: 'graphics', label: '그래픽', desc: '원경·중경·전경의 깊이, 원근 스케일·조명·그림자, HUD 위계와 화면별 UI 완성도' },
   { key: 'immersion', label: '몰입도', desc: '집중하게 만들고 "한 판 더"를 부르는가' },
   { key: 'originality', label: '독창성', desc: '아이디어와 변주의 참신함' }
 ]

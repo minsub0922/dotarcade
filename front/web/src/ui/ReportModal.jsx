@@ -10,7 +10,7 @@ export default function ReportModal({ onReturnOffice }) {
   const games = useStore(s => s.games)
   const bodyRef = useRef(null)
   const streaming = arcade?.status === 'summarizing'
-  const text = (arcade?.status === 'done' ? arcade?.summary : arcade?.summaryStream) || arcade?.summaryStream || ''
+  const text = (['done', 'report_error'].includes(arcade?.status) ? arcade?.summary : arcade?.summaryStream) || arcade?.summaryStream || ''
 
   useEffect(() => { bodyRef.current?.scrollTo(0, 1e9) }, [text])
   if (!arcade) return null
@@ -53,6 +53,7 @@ export default function ReportModal({ onReturnOffice }) {
             <div className="sys-line pulse-text">🧮 손님 {arcade.reports?.length || 0}명의 피드백을 종합하는 중…</div>
           )}
           {text && <div className="md"><Markdown text={text} />{streaming && <span className="caret">▌</span>}</div>}
+          {arcade.feedbackError && <div className="sys-line err">⚠️ 리포트는 복구했지만 게임팩 피드백 저장에 실패했습니다: {arcade.feedbackError}</div>}
         </div>
         <div className="panel-foot">
           {streaming ? (
