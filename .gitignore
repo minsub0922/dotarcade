@@ -2,3 +2,4 @@
 .env
 _to_delete/
 .vercel
+/artifacts/
