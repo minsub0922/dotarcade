@@ -175,6 +175,66 @@ test('prop hit reacts once per target and update cannot create a reaction loop',
   assert.equal(reactions.getEvidence().length, 1)
 })
 
+test('swept prop collision hits the first avatar crossed even when both frame endpoints miss', () => {
+  const reactions = new NpcReactionSystem({ random: () => .5 })
+  const first = npc('dev1', 40, 100)
+  const second = npc('designer', 70, 100)
+  const prop = { id: 'fast-book', kind: 'book', label: '책', x: 110, y: 100, z: 48, vx: 110, vy: 0 }
+
+  const hit = reactions.tryPropHit({
+    now: 100,
+    prop,
+    previousPosition: { x: 0, y: 100, z: 48 },
+    player: { x: -20, y: 100 },
+    agents: new Map([[second.id, second], [first.id, first]]),
+    map: 'office',
+    isWalkable: () => true
+  })
+
+  assert.equal(hit?.agent.id, first.id)
+  assert.ok(hit.contact.progress > 0 && hit.contact.progress < 1)
+  assert.equal(second.meta.reactionKind, undefined)
+})
+
+test('swept prop collision respects avatar height and catches a descending overlap', () => {
+  const player = { x: -20, y: 100 }
+  const pathStart = { x: 0, y: 100, z: 120 }
+  const airborne = { id: 'high-book', kind: 'book', label: '책', x: 100, y: 100, z: 120, vx: 100, vy: 0 }
+  const highTarget = npc('dev1', 50, 100)
+  const highSystem = new NpcReactionSystem({ random: () => .5 })
+
+  assert.equal(highSystem.tryPropHit({
+    now: 100, prop: airborne, previousPosition: pathStart, player,
+    agents: new Map([[highTarget.id, highTarget]]), map: 'office', isWalkable: () => true
+  }), null, 'a prop entirely above the avatar does not hit')
+
+  const descendingTarget = npc('dev1', 50, 100)
+  const descendingSystem = new NpcReactionSystem({ random: () => .5 })
+  const descending = descendingSystem.tryPropHit({
+    now: 100,
+    prop: { ...airborne, id: 'descending-book', z: 60 },
+    previousPosition: pathStart,
+    player,
+    agents: new Map([[descendingTarget.id, descendingTarget]]),
+    map: 'office',
+    isWalkable: () => true
+  })
+  assert.equal(descending?.agent.id, descendingTarget.id)
+  assert.ok(descending.contact.z <= 101)
+
+  const undergroundTarget = npc('dev1', 50, 100)
+  const undergroundSystem = new NpcReactionSystem({ random: () => .5 })
+  assert.equal(undergroundSystem.tryPropHit({
+    now: 100,
+    prop: { ...airborne, id: 'underground-book', z: -40 },
+    previousPosition: { x: 0, y: 100, z: -40 },
+    player,
+    agents: new Map([[undergroundTarget.id, undergroundTarget]]),
+    map: 'office',
+    isWalkable: () => true
+  }), null, 'a prop entirely below the floor does not hit')
+})
+
 test('three-stage visual contract draws impact flash and directional action lines', () => {
   const reactions = new NpcReactionSystem({ random: () => .5 })
   const teammate = npc('dev1', 112, 100)

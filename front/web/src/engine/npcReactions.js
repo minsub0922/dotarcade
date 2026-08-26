@@ -10,10 +10,14 @@ const TEAM_IDS = new Set(['pm', 'dev1', 'dev2', 'designer', 'writer'])
 // origin. The old fixed 52px cutoff only covered the avatar's lower body and
 // made most of the normal throw arc pass through without a hit.
 const AVATAR_HIT_HEIGHT = 79
-const PROP_VERTICAL_REACH = Object.freeze({ book: 22, trashbin: 10 })
+const PROP_VERTICAL_EXTENTS = Object.freeze({
+  book: Object.freeze({ above: 22, below: 22 }),
+  trashbin: Object.freeze({ above: 29, below: 10 })
+})
 
-function propHitCeiling(prop) {
-  return AVATAR_HIT_HEIGHT + (PROP_VERTICAL_REACH[prop?.kind] || 12)
+function propVerticalRange(prop) {
+  const extent = PROP_VERTICAL_EXTENTS[prop?.kind] || { above: 12, below: 12 }
+  return [-extent.above, AVATAR_HIT_HEIGHT + extent.below]
 }
 
 function segmentCircleInterval(from, to, center, radius) {
@@ -35,16 +39,21 @@ function segmentCircleInterval(from, to, center, radius) {
   return enter <= exit ? [enter, exit] : null
 }
 
-function belowCeilingInterval(fromZ, toZ, ceiling) {
-  if (fromZ <= ceiling && toZ <= ceiling) return [0, 1]
-  if (fromZ > ceiling && toZ > ceiling) return null
-  const crossing = Math.max(0, Math.min(1, (ceiling - fromZ) / (toZ - fromZ)))
-  return fromZ <= ceiling ? [0, crossing] : [crossing, 1]
+function linearRangeInterval(fromValue, toValue, minValue, maxValue) {
+  const delta = toValue - fromValue
+  if (Math.abs(delta) < .0001) {
+    return fromValue >= minValue && fromValue <= maxValue ? [0, 1] : null
+  }
+  const atMin = (minValue - fromValue) / delta
+  const atMax = (maxValue - fromValue) / delta
+  const enter = Math.max(0, Math.min(atMin, atMax))
+  const exit = Math.min(1, Math.max(atMin, atMax))
+  return enter <= exit ? [enter, exit] : null
 }
 
-function pathContact(agent, from, to, radius, ceiling) {
+function pathContact(agent, from, to, radius, verticalRange) {
   const horizontal = segmentCircleInterval(from, to, agent, radius)
-  const vertical = belowCeilingInterval(from.z, to.z, ceiling)
+  const vertical = linearRangeInterval(from.z, to.z, verticalRange[0], verticalRange[1])
   if (!horizontal || !vertical) return null
   const progress = Math.max(horizontal[0], vertical[0])
   const exit = Math.min(horizontal[1], vertical[1])
@@ -411,14 +420,18 @@ export class NpcReactionSystem {
           z: Number(previousPosition.z) || 0
         }
       : to
-    const ceiling = propHitCeiling(prop)
+    const verticalRange = propVerticalRange(prop)
     const candidates = []
     for (const agent of values(agents)) {
       if (!this._eligible(agent, map, now, sourceKey('prop', prop))) continue
-      const contact = pathContact(agent, from, to, radius, ceiling)
+      const contact = pathContact(agent, from, to, radius, verticalRange)
       if (contact) candidates.push({ agent, contact })
     }
-    candidates.sort((a, b) => a.contact.progress - b.contact.progress || a.contact.distance - b.contact.distance)
+    candidates.sort((a, b) => (
+      a.contact.progress - b.contact.progress ||
+      a.contact.distance - b.contact.distance ||
+      String(a.agent.id).localeCompare(String(b.agent.id))
+    ))
     const found = candidates[0]
     if (!found) return null
 
