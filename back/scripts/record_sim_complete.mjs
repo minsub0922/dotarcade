@@ -13,6 +13,7 @@ const output = path.join(rawDir, `${recordName}.webm`)
 const marksOutput = path.join(rawDir, `${recordName}.marks.json`)
 const baseUrl = process.env.DOTCADE_URL || 'http://127.0.0.1:5173/'
 const agenda = process.env.DOTCADE_AGENDA || '별빛 정원에서 빛 조각을 모으고 운석을 피하며 파티·도감을 확인하는 2.5D 수집형 캐처'
+const hitlGuidance = process.env.DOTCADE_HITL_GUIDANCE || '수집 손맛을 우선하고, 모바일 한 손 조작에서도 읽히도록 핵심 피드백을 더 선명하게 해 주세요.'
 const meetingTimeoutMs = Number(process.env.DOTCADE_MEETING_TIMEOUT_MS || 20 * 60 * 1000)
 const timeoutMs = Number(process.env.DOTCADE_SIM_TIMEOUT_MS || 10 * 60 * 1000)
 const size = { width: 1280, height: 720 }
@@ -53,6 +54,160 @@ function mark(label, extra = null) {
   return item
 }
 
+async function readDurableMeetingSnapshot(guidance = hitlGuidance) {
+  const deadline = Date.now() + 15_000
+  let snapshot = null
+  do {
+    snapshot = await page.evaluate(async expectedGuidance => {
+      const meeting = window.__dotcade?.store?.getState?.().meeting
+      if (!meeting?.id) throw new Error('active meeting is unavailable while reading its checkpoint')
+      const response = await fetch(`/api/meetings/${encodeURIComponent(meeting.id)}/checkpoint`)
+      if (!response.ok) throw new Error(`checkpoint lookup failed with HTTP ${response.status}`)
+      const payload = await response.json()
+      const checkpoint = payload.checkpoint
+      if (!checkpoint?.context || !checkpoint?.cursor) throw new Error('server did not return a complete meeting checkpoint')
+      const agentIds = Object.keys(checkpoint.context.agents || {}).sort()
+      const canonicalize = value => {
+        if (Array.isArray(value)) return value.map(canonicalize)
+        if (!value || typeof value !== 'object') return value
+        return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])]))
+      }
+      return {
+        meetingId: meeting.id,
+        localStatus: meeting.status,
+        serverStatus: payload.meeting?.status || '',
+        revision: checkpoint.revision,
+        localRevision: meeting.checkpointMeta?.revision ?? null,
+        contextHash: checkpoint.contextHash || '',
+        cursor: checkpoint.cursor,
+        cursorJson: JSON.stringify(checkpoint.cursor),
+        contextJson: JSON.stringify(canonicalize(checkpoint.context)),
+        agentIds,
+        agentCount: agentIds.length,
+        interventionCount: checkpoint.context.interventions?.length || 0,
+        guidanceStored: (checkpoint.context.interventions || []).some(item => item.text === expectedGuidance)
+      }
+    }, guidance)
+    // A pausing checkpoint and the final paused checkpoint can ACK a few
+    // milliseconds apart. Only capture proof after the UI has observed the
+    // server's final revision, otherwise a valid transition looks stale.
+    if (snapshot.localRevision === snapshot.revision) return snapshot
+    await sleep(120)
+  } while (Date.now() < deadline)
+  return snapshot
+}
+
+async function waitForDurableStatus(status, { afterRevision = -1, recovered = false } = {}) {
+  await page.waitForFunction(async expected => {
+    const meeting = window.__dotcade?.store?.getState?.().meeting
+    if (!meeting?.id || meeting.status !== expected.status) return false
+    if (expected.recovered && meeting.recovered !== true) return false
+    try {
+      const response = await fetch(`/api/meetings/${encodeURIComponent(meeting.id)}/checkpoint`)
+      if (!response.ok) return false
+      const payload = await response.json()
+      return payload.meeting?.status === expected.status &&
+        payload.checkpoint?.status === expected.status &&
+        payload.checkpoint?.revision > expected.afterRevision &&
+        payload.checkpoint.revision === meeting.checkpointMeta?.revision
+    } catch {
+      return false
+    }
+  }, { status, afterRevision, recovered }, { timeout: 30_000 })
+}
+
+function assertDurableSnapshot(snapshot, label, expectedStatus) {
+  if (snapshot.localStatus !== expectedStatus || snapshot.serverStatus !== expectedStatus) {
+    throw new Error(`${label} status mismatch: ${JSON.stringify({ local: snapshot.localStatus, server: snapshot.serverStatus })}`)
+  }
+  if (!Number.isInteger(snapshot.revision) || snapshot.revision < 1 || snapshot.localRevision !== snapshot.revision) {
+    throw new Error(`${label} revision mismatch: ${JSON.stringify({ local: snapshot.localRevision, server: snapshot.revision })}`)
+  }
+  if (!/^[0-9a-f]{8}$/i.test(snapshot.contextHash)) throw new Error(`${label} checkpoint hash is invalid`)
+  if (!snapshot.cursor?.node || snapshot.cursorJson !== JSON.stringify(snapshot.cursor)) throw new Error(`${label} cursor is invalid`)
+  if (snapshot.agentCount !== 5 || snapshot.agentIds.join(',') !== 'designer,dev1,dev2,pm,writer') {
+    throw new Error(`${label} does not contain all five agent contexts: ${snapshot.agentIds.join(',')}`)
+  }
+  if (!snapshot.guidanceStored || snapshot.interventionCount < 1) throw new Error(`${label} lost the human guidance`)
+}
+
+async function recordHumanInterventionScene() {
+  const humanLoop = page.locator('section[aria-label="팀장 개입"]')
+  await humanLoop.waitFor({ state: 'visible', timeout: 15_000 })
+  const guidanceInput = page.getByRole('textbox', { name: '모든 팀원에게 전달할 개입 지시' })
+  await guidanceInput.fill(hitlGuidance)
+  mark('hitl_guidance_entered', { guidance: hitlGuidance })
+  await sleep(1500)
+
+  await humanLoop.getByRole('button', { name: /지시 전달 · 정지/ }).click()
+  await waitForDurableStatus('paused')
+  await page.locator('.human-loop.paused').waitFor({ state: 'visible', timeout: 15_000 })
+  const paused = await readDurableMeetingSnapshot()
+  assertDurableSnapshot(paused, 'paused checkpoint', 'paused')
+  mark('hitl_paused_checkpoint', {
+    status: paused.serverStatus,
+    meetingId: paused.meetingId,
+    revision: paused.revision,
+    contextHash: paused.contextHash,
+    cursor: paused.cursor,
+    agentIds: paused.agentIds,
+    agentCount: paused.agentCount,
+    interventionCount: paused.interventionCount,
+    guidanceStored: paused.guidanceStored
+  })
+  await sleep(2400)
+
+  mark('hitl_reload_started', { revision: paused.revision, contextHash: paused.contextHash, cursor: paused.cursor })
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 })
+  await page.locator('canvas').waitFor({ state: 'visible', timeout: 30_000 })
+  await waitForDurableStatus('paused', { afterRevision: paused.revision, recovered: true })
+  await page.locator('.human-loop.paused').waitFor({ state: 'visible', timeout: 15_000 })
+  const restored = await readDurableMeetingSnapshot()
+  assertDurableSnapshot(restored, 'restored checkpoint', 'paused')
+  const sameMeeting = restored.meetingId === paused.meetingId
+  const sameCursor = restored.cursorJson === paused.cursorJson
+  const sameContext = restored.contextJson === paused.contextJson
+  if (!sameMeeting || !sameCursor || !sameContext || restored.revision <= paused.revision) {
+    throw new Error(`durable restore mismatch: ${JSON.stringify({ sameMeeting, sameCursor, sameContext, pausedRevision: paused.revision, restoredRevision: restored.revision })}`)
+  }
+  mark('hitl_context_restored', {
+    status: restored.serverStatus,
+    meetingId: restored.meetingId,
+    revision: restored.revision,
+    sourceRevision: paused.revision,
+    contextHash: restored.contextHash,
+    cursor: restored.cursor,
+    agentIds: restored.agentIds,
+    agentCount: restored.agentCount,
+    sameMeeting,
+    sameCursor,
+    sameContext
+  })
+  await sleep(2400)
+
+  mark('hitl_resume_clicked', { revision: restored.revision, cursor: restored.cursor })
+  await page.locator('section[aria-label="팀장 개입"]').getByRole('button', { name: /재개/ }).click()
+  await waitForDurableStatus('running', { afterRevision: restored.revision })
+  const resumed = await readDurableMeetingSnapshot()
+  assertDurableSnapshot(resumed, 'resumed checkpoint', 'running')
+  if (resumed.meetingId !== paused.meetingId || resumed.revision <= restored.revision) {
+    throw new Error(`resume did not advance the durable meeting: ${JSON.stringify({ meetingId: resumed.meetingId, revision: resumed.revision, restoredRevision: restored.revision })}`)
+  }
+  mark('hitl_running', {
+    status: resumed.serverStatus,
+    meetingId: resumed.meetingId,
+    revision: resumed.revision,
+    resumedFromRevision: restored.revision,
+    contextHash: resumed.contextHash,
+    cursor: resumed.cursor,
+    agentIds: resumed.agentIds,
+    agentCount: resumed.agentCount,
+    interventionCount: resumed.interventionCount,
+    guidanceStored: resumed.guidanceStored
+  })
+  await sleep(1900)
+}
+
 try {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
   await page.locator('canvas').waitFor({ state: 'visible', timeout: 30_000 })
@@ -86,6 +241,7 @@ try {
   let lastReferenceStatus = ''
   let choseDirection = false
   let approved = false
+  let hitlDemonstrated = false
   let terminalMeeting = null
   const meetingDeadline = Date.now() + meetingTimeoutMs
   while (Date.now() < meetingDeadline) {
@@ -118,6 +274,11 @@ try {
       if (['searching', 'selecting', 'blueprinting', 'done', 'fallback'].includes(state.referenceStatus)) {
         mark(`reference_${state.referenceStatus}`, { target: state.referenceTarget })
       }
+    }
+    if (!hitlDemonstrated && state.status === 'running' && state.directionGate) {
+      hitlDemonstrated = true
+      await recordHumanInterventionScene()
+      continue
     }
     if (state.directionGate && !choseDirection) {
       const recommended = page.locator('.direction-card.recommended')

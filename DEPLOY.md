@@ -1,6 +1,6 @@
 # DOTCADE 배포 가이드
 
-## 현재 배포 상태 (2026-08-10)
+## 현재 배포 상태 (2026-08-26)
 
 | 구성 | 위치 | 배포처 | URL |
 |------|------|--------|-----|
@@ -9,6 +9,7 @@
 
 - Vercel은 GitHub 연동 완료 — `main` push 시 프론트 자동 배포
 - Railway는 CLI 배포 — 백엔드 변경 시 `cd back && npx -y @railway/cli up --service dotarcade-back --detach`
+- Railway 서비스의 `/app/server/data`에는 영구 볼륨 `dotarcade-back-volume`이 연결되어 있어 프로필·게임·회의 체크포인트가 재배포/재시작 뒤에도 유지된다.
 - 프론트 `/api`·`/play` → Railway 백엔드로 서버사이드 리라이트 (`front/vercel.json`) — 쿠키·SSE 통과 확인됨
 
 백엔드는 Vercel 서버리스에 올릴 수 없다. 이유:
@@ -49,7 +50,7 @@ vercel git connect                 # GitHub 레포 연결 → push 시 자동 �
 
 - **배포**: `cd back && npx -y @railway/cli up --service dotarcade-back --detach`
 - **환경변수**: 루트 `.env`의 `BACK_*` 키가 Railway 서비스 변수로 등록되어 있음 (`BACK_PORT=8080`으로 오버라이드, 도메인이 8080 포트로 연결됨). 키 변경 시: `npx -y @railway/cli variables --set "KEY=VALUE" --service dotarcade-back`
-- **주의**: 재배포/재시작 시 브라우저별 프로필 데이터(`data/profiles`)가 초기화됨 — 부팅 시 기본 게임은 자동 시드
+- **영속 데이터**: Railway 볼륨 `dotarcade-back-volume`을 컨테이너의 `/app/server/data`에 마운트한다. 이 마운트를 제거하거나 다른 경로로 바꾸면 브라우저별 프로필·게임 저장소·회의 체크포인트가 새 저장소에서 시작되므로 배포 설정 변경 전 백업을 확인한다.
 - `render.yaml`은 Render로 옮길 경우를 위한 대안 블루프린트로 남겨둠
 
 ## 3. 로컬 개발 (변경 없음)

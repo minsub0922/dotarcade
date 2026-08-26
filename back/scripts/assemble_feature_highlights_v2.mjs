@@ -92,6 +92,21 @@ const savedFeedback = fullRunExtra('persistent_feedback')
 if (reportStats.status !== 'done' || reportStats.reports !== 20 || savedFeedback.reports !== 20 || !savedFeedback.found) {
   throw new Error(`full-run feedback is incomplete: ${JSON.stringify({ reportStats, savedFeedback })}`)
 }
+const hitlPaused = fullRunExtra('hitl_paused_checkpoint')
+const hitlRestored = fullRunExtra('hitl_context_restored')
+const hitlRunning = fullRunExtra('hitl_running')
+const validCheckpointHash = value => /^[0-9a-f]{8}$/i.test(String(value || ''))
+if (
+  hitlPaused.status !== 'paused' || hitlPaused.agentCount !== 5 || !hitlPaused.guidanceStored ||
+  hitlRestored.status !== 'paused' || hitlRestored.agentCount !== 5 || !hitlRestored.sameMeeting || !hitlRestored.sameCursor || !hitlRestored.sameContext ||
+  hitlRunning.status !== 'running' || hitlRunning.agentCount !== 5 || !hitlRunning.guidanceStored ||
+  !validCheckpointHash(hitlPaused.contextHash) || !validCheckpointHash(hitlRestored.contextHash) || !validCheckpointHash(hitlRunning.contextHash) ||
+  hitlRestored.sourceRevision !== hitlPaused.revision || hitlRestored.revision <= hitlPaused.revision ||
+  hitlRunning.resumedFromRevision !== hitlRestored.revision || hitlRunning.revision <= hitlRestored.revision ||
+  JSON.stringify(hitlRestored.cursor) !== JSON.stringify(hitlPaused.cursor)
+) {
+  throw new Error(`full-run HITL proof is incomplete: ${JSON.stringify({ hitlPaused, hitlRestored, hitlRunning })}`)
+}
 
 function segment(name) {
   const item = manifest.segments?.[name]
@@ -126,11 +141,26 @@ const windows = {
   research: {
     file: sources.fullRun,
     start: fullRunMark('meeting_phase_research'),
-    end: fullRunMark('reference_done') + 1.8
+    end: fullRunMark('hitl_guidance_entered') - 0.12
+  },
+  hitlPause: {
+    file: sources.fullRun,
+    start: Math.max(0, fullRunMark('hitl_guidance_entered') - 0.2),
+    end: fullRunMark('hitl_reload_started')
+  },
+  hitlRestore: {
+    file: sources.fullRun,
+    start: Math.max(0, fullRunMark('hitl_reload_started') - 0.08),
+    end: fullRunMark('hitl_resume_clicked')
+  },
+  hitlResume: {
+    file: sources.fullRun,
+    start: Math.max(0, fullRunMark('hitl_resume_clicked') - 0.08),
+    end: fullRunMark('hitl_running') + 1.7
   },
   direction: {
     file: sources.fullRun,
-    start: fullRunMark('reference_done') + 1.4,
+    start: Math.max(fullRunMark('reference_done') + 1.4, fullRunMark('hitl_running') + 1.75),
     end: fullRunMark('meeting_phase_concept') + 0.5
   },
   negotiate: {
@@ -256,6 +286,24 @@ function captionSvg({ section, line1, line2, badge = '', focus = null }) {
 </svg>`
 }
 
+// HITL controls live at the bottom of the meeting panel. Keep these captions
+// compact and on the world side so the typed guidance, PAUSED badge and
+// checkpoint revision remain visible in the actual product UI.
+function compactCaptionSvg({ section, line1, line2, badge = '' }) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
+  <defs><filter id="shadow" x="-20%" y="-30%" width="140%" height="180%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-opacity=".62"/></filter></defs>
+  <g font-family="Apple SD Gothic Neo, Noto Sans KR, sans-serif" filter="url(#shadow)">
+    <rect x="30" y="34" width="570" height="132" rx="20" fill="#090b12" fill-opacity=".9" stroke="#83f0b2" stroke-opacity=".55"/>
+    <circle cx="54" cy="60" r="6" fill="#83f0b2"/>
+    <text x="70" y="65" fill="#ffffff" font-size="12" font-weight="850" letter-spacing="1.1">DOTCADE · ${xml(section)}</text>
+    ${badge ? `<rect x="418" y="47" width="160" height="28" rx="14" fill="#7258ef"/><text x="498" y="66" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="850">${xml(badge)}</text>` : ''}
+    <text x="52" y="108" fill="#ffffff" font-size="20" font-weight="850">${xml(line1)}</text>
+    <text x="52" y="140" fill="#d6dae3" font-size="15" font-weight="650">${xml(line2)}</text>
+  </g>
+</svg>`
+}
+
 function productionMilestoneSvg() {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
@@ -323,6 +371,9 @@ const overlays = {
   pocket: captionSvg({ section: '게임팩 한 판', line1: '대표라고 회의만 하는 건 아닙니다.', line2: '게임팩에서 하나를 골라 사무실 휴대기로 우리 게임을 직접 확인합니다.' }),
   agenda: captionSvg({ section: '새 게임 제작 회의', line1: '이제 새로운 게임을 만들 차례입니다.', line2: '별빛 정원에서 빛 조각을 모으고 운석을 피하는 게임을 제안합니다.' }),
   research: captionSvg({ badge: '레퍼런스 탐색 ×1.5', line1: '팀은 아이디어에서 검색어를 뽑아 여러 자료를 동시에 살펴봅니다.', line2: '우리 게임의 방향을 선명하게 만들 근거를 고르는 중입니다.' }),
+  hitlPause: compactCaptionSvg({ section: 'HUMAN IN THE LOOP', badge: `CHECKPOINT r${hitlPaused.revision}`, line1: '팀장이 지시를 남기고 회의를 즉시 멈춥니다.', line2: `5명 전체 문맥 · r${hitlPaused.revision} · HASH ${hitlPaused.contextHash}` }),
+  hitlRestore: compactCaptionSvg({ section: 'DURABLE RESTORE', badge: `RESTORED r${hitlRestored.revision}`, line1: '새로고침 뒤에도 같은 작업 지점이 복원됩니다.', line2: `${hitlRestored.cursor?.node || '실행'} 커서 · 5/5 agent context 일치 검증` }),
+  hitlResume: compactCaptionSvg({ section: 'SAFE RESUME', badge: `RUNNING r${hitlRunning.revision}`, line1: '복원 지점에서 팀장 지시를 반영해 재개합니다.', line2: `running · revision ${hitlRestored.revision} → ${hitlRunning.revision} · 문맥 유실 없음` }),
   direction: captionSvg({ line1: '고른 레퍼런스는 제작 가능한 규칙으로 다시 해석됩니다.', line2: '필수 화면과 조작, 깊이와 피드백 기준을 정하고 방향을 선택합니다.' }),
   negotiate: captionSvg({ section: '멀티에이전트 회의', badge: '회의 요약 ×2', line1: '기획자와 디자이너, 개발자가 서로 다른 의견을 조율합니다.', line2: '무엇을 만들고 무엇을 포기할지 합의해 하나의 게임으로 좁혀갑니다.' }),
   decisionDocs: captionSvg({ line1: '팀의 선택은 기획서와 화면 설계, 개발 계획으로 정리됩니다.', line2: '대표는 구현 전에 목표와 범위, 위험 요소를 마지막으로 확인합니다.' }),
@@ -351,7 +402,7 @@ await Promise.all([
 
 const clips = []
 const editPlan = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   title: 'DOTCADE 게임회사 대표의 하루',
   sourceManifest: manifestPath,
   continuousProductionRun: sources.fullRun,
@@ -445,6 +496,9 @@ await recordedClip('clip03_social', windows.social, 1, 'social')
 await recordedClip('clip04_pocket', windows.pocket, 1, 'pocket')
 await recordedClip('clip05_agenda', windows.agenda, 1, 'agenda')
 await recordedClip('clip06_research', windows.research, 1.5, 'research')
+await recordedClip('clip06a_hitl_pause', windows.hitlPause, 1, 'hitlPause')
+await recordedClip('clip06b_hitl_restore', windows.hitlRestore, 1, 'hitlRestore')
+await recordedClip('clip06c_hitl_resume', windows.hitlResume, 1, 'hitlResume')
 await recordedClip('clip07_direction', windows.direction, 1.25, 'direction')
 await recordedClip('clip08_negotiate', windows.negotiate, 2, 'negotiate')
 await recordedClip('clip09_decisions', windows.decisionDocs, 2, 'decisionDocs')
