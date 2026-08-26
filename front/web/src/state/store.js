@@ -42,7 +42,7 @@ export const useStore = create((set, get) => ({
   openPanel: (panel, panelData = null) => set({ panel, panelData }),
   closePanel: () => set({ panel: null, panelData: null }),
 
-  // 상호작용 힌트 (E키 대상)
+  // 상호작용 힌트 (E 기본 동작 + 겹치지 않는 R 탈것 보조 동작)
   hint: null,
   setHint: hint => {
     if (JSON.stringify(hint) !== JSON.stringify(get().hint)) set({ hint })
