@@ -5,6 +5,55 @@
 
 const DEFAULT_TILE = 48
 const TEAM_IDS = new Set(['pm', 'dev1', 'dev2', 'designer', 'writer'])
+// `prop.z` is measured from the floor to the prop's draw origin. A standing
+// avatar is about 79px tall, and the tumbling prop itself extends below that
+// origin. The old fixed 52px cutoff only covered the avatar's lower body and
+// made most of the normal throw arc pass through without a hit.
+const AVATAR_HIT_HEIGHT = 79
+const PROP_VERTICAL_REACH = Object.freeze({ book: 22, trashbin: 10 })
+
+function propHitCeiling(prop) {
+  return AVATAR_HIT_HEIGHT + (PROP_VERTICAL_REACH[prop?.kind] || 12)
+}
+
+function segmentCircleInterval(from, to, center, radius) {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const ox = from.x - center.x
+  const oy = from.y - center.y
+  const a = dx * dx + dy * dy
+  const radiusSq = radius * radius
+  if (a < .0001) return ox * ox + oy * oy <= radiusSq ? [0, 1] : null
+
+  const b = 2 * (ox * dx + oy * dy)
+  const c = ox * ox + oy * oy - radiusSq
+  const discriminant = b * b - 4 * a * c
+  if (discriminant < 0) return null
+  const root = Math.sqrt(discriminant)
+  const enter = Math.max(0, (-b - root) / (2 * a))
+  const exit = Math.min(1, (-b + root) / (2 * a))
+  return enter <= exit ? [enter, exit] : null
+}
+
+function belowCeilingInterval(fromZ, toZ, ceiling) {
+  if (fromZ <= ceiling && toZ <= ceiling) return [0, 1]
+  if (fromZ > ceiling && toZ > ceiling) return null
+  const crossing = Math.max(0, Math.min(1, (ceiling - fromZ) / (toZ - fromZ)))
+  return fromZ <= ceiling ? [0, crossing] : [crossing, 1]
+}
+
+function pathContact(agent, from, to, radius, ceiling) {
+  const horizontal = segmentCircleInterval(from, to, agent, radius)
+  const vertical = belowCeilingInterval(from.z, to.z, ceiling)
+  if (!horizontal || !vertical) return null
+  const progress = Math.max(horizontal[0], vertical[0])
+  const exit = Math.min(horizontal[1], vertical[1])
+  if (progress > exit) return null
+  const x = from.x + (to.x - from.x) * progress
+  const y = from.y + (to.y - from.y) * progress
+  const z = from.z + (to.z - from.z) * progress
+  return { progress, x, y, z, distance: Math.hypot(agent.x - x, agent.y - y) }
+}
 
 const TEAM_LINES = {
   pm: {
@@ -350,28 +399,38 @@ export class NpcReactionSystem {
 
   // 던진 물체가 실제 충돌 가능한 상태일 때 호출한다. 리액션을 소비했을
   // 때만 결과를 돌려주므로 월드 쪽은 그때 반사/파티클을 적용하면 된다.
-  tryPropHit({ now, prop, agents, map, player, isWalkable, bubble, onInteract }) {
+  tryPropHit({ now, prop, previousPosition = null, agents, map, player, isWalkable, bubble, onInteract }) {
     const speed = Math.hypot(prop?.vx || 0, prop?.vy || 0)
-    if (!prop || speed <= 2.1 || prop.z >= 52) return null
+    if (!prop || speed <= 2.1) return null
     const radius = prop.kind === 'trashbin' ? 30 : 24
+    const to = { x: Number(prop.x) || 0, y: Number(prop.y) || 0, z: Number(prop.z) || 0 }
+    const from = previousPosition
+      ? {
+          x: Number(previousPosition.x) || 0,
+          y: Number(previousPosition.y) || 0,
+          z: Number(previousPosition.z) || 0
+        }
+      : to
+    const ceiling = propHitCeiling(prop)
     const candidates = []
     for (const agent of values(agents)) {
       if (!this._eligible(agent, map, now, sourceKey('prop', prop))) continue
-      const distance = Math.hypot(agent.x - prop.x, agent.y - prop.y)
-      if (distance < radius) candidates.push({ agent, distance })
+      const contact = pathContact(agent, from, to, radius, ceiling)
+      if (contact) candidates.push({ agent, contact })
     }
-    candidates.sort((a, b) => a.distance - b.distance)
+    candidates.sort((a, b) => a.contact.progress - b.contact.progress || a.contact.distance - b.contact.distance)
     const found = candidates[0]
     if (!found) return null
 
     const incoming = unit(prop.vx, prop.vy)
     const reaction = this._react({
       now, agent: found.agent, player, map, sourceType: 'prop', source: prop,
-      incoming, speed, distance: found.distance, isWalkable, bubble, onInteract
+      incoming, speed, distance: found.contact.distance, isWalkable, bubble, onInteract
     })
     return reaction ? {
       ...reaction,
       agent: found.agent,
+      contact: found.contact,
       restitution: prop.kind === 'trashbin' ? .38 : .48,
       lift: prop.kind === 'trashbin' ? 3.5 : 3.2
     } : null

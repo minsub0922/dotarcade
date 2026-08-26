@@ -874,6 +874,7 @@ export class Engine {
       const flying = o.z > 0 || Math.abs(o.vx) > .04 || Math.abs(o.vy) > .04 || Math.abs(o.vz) > .04
       if (!flying) continue
 
+      const previousPosition = { x: o.x, y: o.y, z: o.z }
       let wallHit = false
       const nx = o.x + o.vx * f
       const ny = o.y + o.vy * f
@@ -891,10 +892,11 @@ export class Engine {
       o.spin += (Math.abs(o.vx) + Math.abs(o.vy)) * (o.kind === 'book' ? .045 : .018) * f
 
       const speed = Math.hypot(o.vx, o.vy)
-      if (speed > 2.1 && this.t - o.hitAt > 520 && o.z < 52) {
+      if (speed > 2.1 && this.t - o.hitAt > 520) {
         const hit = this.npcReactions.tryPropHit({
           now: this.t,
           prop: o,
+          previousPosition,
           player: this.player,
           agents: this.agents,
           map: this.map,
@@ -903,6 +905,7 @@ export class Engine {
           onInteract: event => this.onInteract(event)
         })
         if (hit) {
+          o.x = hit.contact.x; o.y = hit.contact.y; o.z = hit.contact.z
           o.hitAt = this.t
           o.vx *= -hit.restitution; o.vy *= -hit.restitution
           o.vz = Math.max(hit.lift, Math.abs(o.vz) * .5)

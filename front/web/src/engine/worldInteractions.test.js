@@ -47,7 +47,7 @@ function screenPoint(engine, worldX, worldY) {
 }
 
 for (const [id, kind] of [['office-book-a', 'book'], ['office-trash', 'trashbin']]) {
-  test(`${kind} pointer interaction picks up first and only an explicit action throws`, () => {
+  test(`${kind} pointer interaction keeps ground taps for movement and explicit actions throw`, () => {
     const { engine, events } = createEngine()
     const object = placeNearPlayer(engine, id)
     const objectPoint = screenPoint(engine, object.x, object.y)
@@ -68,6 +68,86 @@ for (const [id, kind] of [['office-book-a', 'book'], ['office-trash', 'trashbin'
     assert.equal(object.held, false)
     assert.ok(object.vx > 0)
     assert.deepEqual(events.map(event => event.type), ['pickup', 'throw'])
+  })
+}
+
+test('tapping an avatar while carrying does not auto-aim or consume the held prop', () => {
+  const { engine, events } = createEngine()
+  const book = placeNearPlayer(engine, 'office-book-a')
+  const teammate = engine.addAgent('designer', 'designer', [15, 11], { map: 'office', autonomy: false })
+  teammate.x = engine.player.x + 112
+  teammate.y = engine.player.y + 36
+
+  assert.equal(engine.pickupObject(book.id), true)
+  const ground = screenPoint(engine, engine.player.x + 150, engine.player.y - 120)
+  assert.equal(engine.interactAtPoint(ground.x, ground.y), false)
+  assert.equal(engine.heldObjectId, book.id)
+
+  const avatarBody = screenPoint(engine, teammate.x, teammate.y - 38)
+  assert.equal(engine.interactAtPoint(avatarBody.x, avatarBody.y), false)
+  assert.equal(engine.heldObjectId, book.id)
+  assert.equal(book.held, true)
+  assert.deepEqual(events.map(event => event.type), ['pickup'])
+})
+
+test('a fast prop hits the first avatar crossed between frames and ignores avatars off its path', () => {
+  const { engine, events } = createEngine()
+  engine.t = 1000
+  engine.npcReactions.random = () => .5
+  const book = placeNearPlayer(engine, 'office-book-a')
+  const first = engine.addAgent('dev1', 'dev1', [13, 10], { map: 'office', autonomy: false })
+  const second = engine.addAgent('designer', 'designer', [14, 10], { map: 'office', autonomy: false })
+  const offPath = engine.addAgent('writer', 'writer', [13, 11], { map: 'office', autonomy: false })
+  first.x = engine.player.x + 60; first.y = engine.player.y
+  second.x = engine.player.x + 92; second.y = engine.player.y
+  offPath.x = engine.player.x + 45; offPath.y = engine.player.y + 32
+  engine.player.dir = 'right'
+
+  assert.equal(engine.pickupObject(book.id), true)
+  assert.equal(engine.throwHeld(), true)
+  book.vx = 120
+  book.vy = 0
+  book.vz = 0
+  book.z = 48
+  engine.t += 16.67
+  engine.update(16.67)
+
+  const hit = events.find(event => event.type === 'propHit')
+  assert.equal(hit?.agent.id, first.id)
+  assert.ok(first.meta.reactionKind)
+  assert.equal(second.meta.reactionKind, undefined)
+  assert.equal(offPath.meta.reactionKind, undefined)
+  assert.ok(book.x < first.x, 'the prop is rewound to first contact before bouncing')
+  assert.ok(book.vx < 0)
+})
+
+for (const [id, kind] of [['office-book-a', 'book'], ['office-trash', 'trashbin']]) {
+  test(`${kind} real throw arc hits and reacts at normal play distance`, () => {
+    const { engine, events } = createEngine()
+    engine.t = 1000
+    engine.npcReactions.random = () => .5
+    const object = placeNearPlayer(engine, id)
+    const teammate = engine.addAgent('dev1', 'dev1', [15, 10], { map: 'office', autonomy: false })
+    teammate.x = engine.player.x + 120
+    teammate.y = engine.player.y
+    engine.player.dir = 'right'
+
+    assert.equal(engine.pickupObject(object.id), true)
+    assert.equal(engine.throwHeld(), true)
+    for (let frame = 0; frame < 45 && !events.some(event => event.type === 'propHit'); frame++) {
+      engine.t += 16.67
+      engine.update(16.67)
+    }
+
+    const reactions = events.filter(event => event.type === 'npcReaction')
+    const hits = events.filter(event => event.type === 'propHit')
+    assert.equal(reactions.length, 1)
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0].agent.id, teammate.id)
+    assert.ok(teammate.meta.reactionKind)
+    assert.ok(object.vx < 0, 'the prop bounces away from the avatar after contact')
+    assert.equal(engine.getReactionEvidence().at(-1).source.id, object.id)
+    assert.equal(engine.getReactionEvidence().at(-1).agent.id, teammate.id)
   })
 }
 
