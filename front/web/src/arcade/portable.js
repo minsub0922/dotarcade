@@ -2,6 +2,8 @@
 // The helpers prefer the autonomous planner API when it exists, but keep a
 // bounded A* fallback so the evaluation pipeline never waits forever.
 
+import { isMeetingActive } from '../meeting/status.js'
+
 export const PORTABLE_SPOTS = {
   office: [[11, 12], [23, 14], [10, 17], [23, 17]],
   arcade: [[11, 7], [17, 8], [8, 14], [21, 14], [24, 12]]
@@ -165,7 +167,7 @@ export function startOfficeHandheldAmbience(world, team, getState) {
     if (entity?.meta?.portableSession === token) {
       setAgentHandheld(world, member.id, null)
       delete entity.meta.portableSession
-      if (returnHome && entity.home?.desk && getState()?.map === 'office' && getState()?.meeting?.status !== 'running') {
+      if (returnHome && entity.home?.desk && getState()?.map === 'office' && !isMeetingActive(getState()?.meeting)) {
         routeAgentBounded(world, member.id, entity.home.desk, {
           kind: 'return-to-desk', venue: 'office', timeoutMs: 6500, maxReplans: 1
         }).then(() => world?.sit?.(member.id, entity.home.desk, entity.home.face))
@@ -177,7 +179,7 @@ export function startOfficeHandheldAmbience(world, team, getState) {
   const tick = async () => {
     if (stopped) return
     const state = getState?.()
-    if (state?.map !== 'office' || state?.meeting?.status === 'running' || state?.arcade?.status === 'running') {
+    if (state?.map !== 'office' || isMeetingActive(state?.meeting) || state?.arcade?.status === 'running') {
       endSession({ returnHome: false })
       return schedule(6500, 6500)
     }

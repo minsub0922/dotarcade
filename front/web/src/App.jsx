@@ -19,6 +19,7 @@ import Toasts from './ui/Toasts.jsx'
 import ReportModal from './ui/ReportModal.jsx'
 import MilestoneConfirm from './ui/MilestoneConfirm.jsx'
 import { PHASES } from './meeting/prompts.js'
+import { isMeetingActive, meetingStatusCopy } from './meeting/status.js'
 import { PHASE_ICONS } from './ui/PhaseStepper.jsx'
 import { getMilestoneConflict, MILESTONE_ACTION } from './ui/milestone.js'
 
@@ -152,6 +153,23 @@ export default function App() {
       eng.setShelfGames(gl.games)
       eng.setZoom(1)
       eng.start()
+      if (typeof meetRef.current?.restoreLatest === 'function') {
+        try {
+          const restoring = meetRef.current.restoreLatest()
+          Promise.resolve(restoring).then(restored => {
+            if (!alive || !restored) return
+            const st = useStore.getState()
+            if (isMeetingActive(st.meeting)) {
+              st.openPanel('meeting')
+              st.toast('↻ 저장된 회의를 전체 팀 컨텍스트와 함께 복원했습니다.')
+            }
+          }).catch(error => {
+            if (alive) useStore.getState().toast(`회의 복원 실패: ${error?.message || error}`, 'warn')
+          })
+        } catch (error) {
+          useStore.getState().toast(`회의 복원 실패: ${error?.message || error}`, 'warn')
+        }
+      }
       const resizeWorld = () => {
         const rect = cvRef.current?.getBoundingClientRect()
         if (rect?.width && rect?.height) eng.resizeViewport(rect.width, rect.height, window.devicePixelRatio || 1)
@@ -168,7 +186,7 @@ export default function App() {
 
       // 첫 접속(브라우저 프로필 기준) 시 도움말 가이드 표시
       const visitedKey = 'dotcade-visited-' + (cfg.profile || 'local')
-      if (!localStorage.getItem(visitedKey)) {
+      if (!isMeetingActive(useStore.getState().meeting) && !localStorage.getItem(visitedKey)) {
         useStore.getState().openPanel('help')
         localStorage.setItem(visitedKey, '1')
       }
@@ -242,7 +260,7 @@ export default function App() {
       st.openPanel('library')
     } else if (h.type === 'meeting') {
       // 회의실 근처 E — HUD '회의 시작' 버튼과 동일 동작
-      if (st.meeting?.status === 'running') st.openPanel('meeting')
+      if (isMeetingActive(st.meeting)) st.openPanel('meeting')
       else if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) st.toast('플레이테스트가 끝난 뒤 새 회의를 시작할 수 있습니다', 'warn')
       else st.openPanel('meetingStart')
     } else if (h.type === 'door') {
@@ -296,7 +314,7 @@ export default function App() {
 
   async function startMeeting(agenda, upgradeGame, options = {}) {
     const st = useStore.getState()
-    if (st.meeting?.status === 'running') return st.toast('이미 회의가 진행 중입니다', 'warn')
+    if (isMeetingActive(st.meeting)) return st.toast('진행 중이거나 일시정지된 회의를 먼저 마쳐 주세요', 'warn')
     if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) return st.toast('플레이테스트가 끝난 뒤 새 회의를 시작할 수 있습니다', 'warn')
     if (st.map === 'arcade') switchMap()
     settleForActivity('회의 시작')
@@ -307,7 +325,7 @@ export default function App() {
   async function deployToArcade(game) {
     const st = useStore.getState()
     if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) return st.toast('오락실 시뮬레이션이 이미 진행 중입니다', 'warn')
-    if (st.meeting?.status === 'running') return st.toast('제작 회의를 마친 뒤 배포할 수 있습니다', 'warn')
+    if (isMeetingActive(st.meeting)) return st.toast('제작 회의를 마친 뒤 배포할 수 있습니다', 'warn')
     const eng = engRef.current
     settleForActivity('오락실 배포')
     if (st.map !== 'arcade') { eng.setMap('arcade', eng.maps.arcade.spawn); st.setMap('arcade') }
@@ -450,7 +468,8 @@ export default function App() {
   const arcade = useStore(s => s.arcade)
   const meeting = useStore(s => s.meeting)
   const mIdx = meeting ? Math.max(0, PHASES.findIndex(p => p.key === meeting.phase)) : 0
-  const meetingActive = meeting?.status === 'running'
+  const meetingActive = isMeetingActive(meeting)
+  const meetingRuntime = meetingStatusCopy(meeting)
   const arcadeActive = arcade && ['running', 'summarizing'].includes(arcade.status)
 
   function canvasPoint(e) {
@@ -492,7 +511,8 @@ export default function App() {
         onLibrary={() => useStore.getState().openPanel('library')}
         onMeeting={() => {
           const st = useStore.getState()
-          if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) st.toast('플레이테스트가 끝난 뒤 새 회의를 시작할 수 있습니다', 'warn')
+          if (isMeetingActive(st.meeting)) st.openPanel('meeting')
+          else if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) st.toast('플레이테스트가 끝난 뒤 새 회의를 시작할 수 있습니다', 'warn')
           else st.openPanel('meetingStart')
         }}
         onArcade={switchMap}
@@ -533,10 +553,10 @@ export default function App() {
             </button>
           )}
           <div className="map-badge"><span>{map === 'office' ? '▦' : '◆'}</span><div><b>{map === 'office' ? '사무실' : '오락실'}</b><small>{map === 'office' ? '팀원 5명과 함께' : '플레이 테스트 공간'}</small></div></div>
-          {meeting?.status === 'running' && panel !== 'meeting' && (
-            <button className="meeting-float" onClick={() => useStore.getState().openPanel('meeting')} title="회의 패널 열기">
+          {meetingActive && panel !== 'meeting' && (
+            <button className={`meeting-float ${meetingRuntime.tone}`} onClick={() => useStore.getState().openPanel('meeting')} title="회의 패널 열기" aria-label={`${meetingRuntime.label} · 회의 패널 열기`}>
               <span className="mf-dot" />
-              <span>회의 진행 중</span>
+              <span>{meetingRuntime.label}</span>
               <b>{PHASE_ICONS[PHASES[mIdx].key]} {PHASES[mIdx].label}</b>
               <span className="mf-count">{mIdx + 1}/{PHASES.length}</span>
               <span className="mf-bar"><span style={{ width: (mIdx / (PHASES.length - 1)) * 100 + '%' }} /></span>
@@ -547,7 +567,7 @@ export default function App() {
 
       <div className={`player-card ${meetingActive ? 'busy' : arcadeActive ? 'testing' : ''}`}>
         <span className="player-avatar"><img src="/assets/sprites_v2/player/face.png" alt="내 아바타" /><i /></span>
-        <span className="player-copy"><b>나</b><small>{meetingActive ? '제작 지휘 중' : arcadeActive ? '플레이테스트 관전 중' : '스튜디오 팀장'}</small></span>
+        <span className="player-copy"><b>나</b><small>{meeting?.status === 'paused' ? '팀장 개입 대기' : meetingActive ? '제작 지휘 중' : arcadeActive ? '플레이테스트 관전 중' : '스튜디오 팀장'}</small></span>
         <span className="move-help"><kbd>WASD · E · R · F</kbd><small>이동 · 대화 · 탑승 · 던지기</small></span>
       </div>
 

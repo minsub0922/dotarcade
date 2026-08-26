@@ -35,6 +35,20 @@ test('active work takes priority over the release loop', () => {
   assert.equal(playtest.step, '8/20')
 })
 
+test('pause and resume transitions remain active work and surface the human intervention state', () => {
+  for (const status of ['pausing', 'paused', 'resuming']) {
+    const meeting = { status, phase: 'design', phaseLabel: '아트/UX 스펙', agenda: '별빛 정원' }
+    const milestone = getStudioMilestone({ meeting })
+    assert.equal(milestone.action, MILESTONE_ACTION.RESUME_MEETING, status)
+    assert.match(getMilestoneConflict({ meeting }, MILESTONE_ACTION.START_PLAYTEST), /제작 회의/, status)
+  }
+
+  const paused = getStudioMilestone({ meeting: { status: 'paused', phase: 'design', phaseLabel: '아트/UX 스펙' } })
+  assert.match(paused.kicker, /개입 대기/)
+  assert.match(paused.actionLabel, /재개/)
+  assert.equal(paused.tone, 'warning')
+})
+
 test('active project selection ignores old seed games and follows explicit ownership', () => {
   const games = [
     { id: 'seed', source: 'default', updatedAt: '2030-01-01' },

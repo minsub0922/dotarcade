@@ -10,10 +10,15 @@ import {
   visualQaRequiredScreens
 } from './referenceContract.js'
 
+// The durable state-machine runner is the public meeting engine. The legacy
+// implementation remains below temporarily as a reference for prompt/output
+// compatibility; new executions always use the resumable engine.
+export { MeetingEngine } from './resumableEngine.js'
+
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const S = () => useStore.getState()
 
-export class MeetingEngine {
+class LegacyMeetingEngine {
   constructor(world) {
     this.world = world
     this.cancelled = false

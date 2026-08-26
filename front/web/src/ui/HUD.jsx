@@ -1,6 +1,7 @@
 import React from 'react'
 import { useStore } from '../state/store.js'
 import { TEAM } from '../data/personas.js'
+import { isMeetingActive, meetingStatusCopy } from '../meeting/status.js'
 import { getStudioMilestone } from './milestone.js'
 
 export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp, onMilestone, journeyActive = false, worldReady = true }) {
@@ -10,7 +11,8 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
   const meeting = useStore(s => s.meeting)
   const arcade = useStore(s => s.arcade)
   const studio = useStore(s => s.studio)
-  const meetingActive = meeting?.status === 'running'
+  const meetingActive = isMeetingActive(meeting)
+  const meetingRuntime = meetingStatusCopy(meeting)
   const arcadeActive = arcade && ['running', 'summarizing'].includes(arcade.status)
   const objective = getStudioMilestone({ games, meeting, arcade, studio, map })
   const interactionDisabled = journeyActive || !worldReady
@@ -59,7 +61,7 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
       </header>
 
       <nav className="hud-btns" aria-label="스튜디오 메뉴">
-        <button className="hud-action" onClick={onMeeting} disabled={interactionDisabled || meeting?.status === 'running' || arcadeActive} title="팀원들과 BMAD 회의로 게임 제작" aria-label="새 회의 · 게임 만들기">
+        <button className="hud-action" onClick={onMeeting} disabled={interactionDisabled || meetingActive || arcadeActive} title="팀원들과 BMAD 회의로 게임 제작" aria-label="새 회의 · 게임 만들기">
           <span className="action-icon meeting-icon">✦</span><span className="action-label"><b>새 회의</b><small>게임 만들기</small></span>
         </button>
         <button className="hud-action" onClick={onLibrary} disabled={interactionDisabled} title="게임팩 열기" aria-label={`게임팩 · ${games.length}개 보관 중`}>
@@ -70,8 +72,8 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
         </button>
         {(meetingActive || arcadeActive) && <span className="rail-divider" />}
         {meetingActive && (
-          <button className="hud-action activity" disabled={interactionDisabled} onClick={() => useStore.getState().openPanel('meeting')} aria-label={`회의 진행 중 · ${meeting.phaseLabel}`}>
-            <span className="activity-dot" /><span className="action-label"><b>회의 진행 중</b><small>{meeting.phaseLabel}</small></span>
+          <button className={`hud-action activity meeting-${meetingRuntime.tone}`} disabled={interactionDisabled} onClick={() => useStore.getState().openPanel('meeting')} aria-label={`${meetingRuntime.label} · ${meeting.phaseLabel}`}>
+            <span className="activity-dot" /><span className="action-label"><b>{meetingRuntime.label}</b><small>{meeting.phaseLabel}</small></span>
           </button>
         )}
         {arcadeActive && (

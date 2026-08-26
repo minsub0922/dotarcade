@@ -262,6 +262,9 @@ code { padding: 2px 6px; border-radius: 6px; background: #ececf1; color: #454551
 .rail-divider { height: 1px; margin: 2px 4px; background: rgba(255,255,255,.13); }
 .hud-action.activity { background: #3a3436; }
 .activity-dot { width: 11px; height: 11px; border: 3px solid rgba(255,87,112,.22); border-radius: 50%; background: #f15570; box-sizing: content-box; animation: activityPulse 1.5s infinite; }
+.hud-action.activity.meeting-paused { background: #463d29; }
+.hud-action.activity.meeting-paused .activity-dot { border-color: rgba(244,190,63,.23); background: #e9b53b; animation: none; }
+.hud-action.activity.meeting-saving .activity-dot { border-color: rgba(170,160,255,.22); background: #a79cff; }
 
 .player-card {
   position: fixed; left: 16px; bottom: 16px; z-index: 25;
@@ -588,6 +591,32 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
 .approval { display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border-top: 1px solid #e1c86f; background: #fff9e9; font-size: 13px; }
 .approval .input-row { padding: 0; border: 0; background: transparent; }
 .approval-go { width: 100%; }
+.meeting-runtime { display: flex; min-height: 34px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid #dfe1e7; background: #f7f8fb; color: #666a76; font-size: 10px; }
+.meeting-runtime-state { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: #41444e; }
+.meeting-runtime-state i { width: 8px; height: 8px; border-radius: 50%; background: #57b986; box-shadow: 0 0 0 3px rgba(87,185,134,.12); }
+.meeting-runtime.paused { border-bottom-color: #e3cd84; background: #fff9e8; }
+.meeting-runtime.paused .meeting-runtime-state { color: #855f0e; }
+.meeting-runtime.paused .meeting-runtime-state i { background: #e3a92f; box-shadow: 0 0 0 3px rgba(227,169,47,.15); }
+.meeting-runtime.saving .meeting-runtime-state i { background: #7567d9; box-shadow: 0 0 0 3px rgba(117,103,217,.14); animation: fade 1s infinite; }
+.meeting-runtime.error .meeting-runtime-state i, .meeting-runtime.cancelled .meeting-runtime-state i { background: #e85870; box-shadow: 0 0 0 3px rgba(232,88,112,.14); }
+.checkpoint-meta { min-width: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.checkpoint-error { color: #b13b50; }
+.human-loop { position: relative; z-index: 3; display: flex; flex: 0 0 auto; flex-direction: column; gap: 8px; padding: 11px 12px 9px; border-top: 1px solid #cfd3e1; background: linear-gradient(145deg, #f7f8fd, #fff); box-shadow: 0 -8px 20px rgba(38,40,55,.05); }
+.human-loop.paused { border-top-color: #ddbd58; background: linear-gradient(145deg, #fffaeb, #fffdf7); box-shadow: 0 -8px 22px rgba(133,91,10,.08); }
+.human-loop-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.human-loop-head > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.human-loop-head b { color: #4338a3; font-size: 12.5px; }
+.human-loop-head small { color: #727583; font-size: 9.5px; line-height: 1.4; }
+.human-loop.paused .human-loop-head b { color: #855f0e; }
+.human-loop-badge { flex: 0 0 auto; padding: 3px 7px; border: 1px solid #dfc66f; border-radius: 999px; background: #fff5cc; color: #815d13; font-size: 8px; font-weight: 900; letter-spacing: .7px; }
+.human-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 8px; }
+.human-compose textarea { min-width: 0; min-height: 58px; max-height: 120px; padding: 8px 9px; font-size: 11.5px; line-height: 1.45; }
+.human-actions { display: flex; min-width: 124px; flex-direction: column; justify-content: flex-end; gap: 6px; }
+.human-actions button { min-height: 27px; padding: 6px 9px; font-size: 10px; white-space: nowrap; }
+.human-loop-note { display: flex; justify-content: space-between; color: #9699a3; font-size: 8.5px; }
+.ghost-danger { margin-right: auto; border-color: #eccbd1; background: #fff8f9; color: #ba4055; }
+.cancel-confirm { display: flex; width: 100%; align-items: center; justify-content: flex-end; gap: 7px; }
+.cancel-confirm span { min-width: 0; margin-right: auto; color: #9b3447; font-size: 10.5px; }
 .studio-reward { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid #bfe5cf; background: linear-gradient(110deg, #effbf4, #fffbea); animation: rewardIn .32s ease-out; }
 .studio-reward > div { display: flex; min-width: 120px; flex: 1; flex-direction: column; gap: 2px; }
 .studio-reward small { color: #52705f; font-size: 9.5px; }
@@ -916,6 +945,9 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
 .meeting-float { position: absolute; top: 74px; left: 50%; z-index: 6; display: flex; align-items: center; gap: 8px; padding: 9px 13px; border: 1px solid rgba(255,255,255,.15); border-radius: 13px; background: rgba(38,38,40,.95); color: #fff; box-shadow: 0 8px 24px rgba(0,0,0,.24); transform: translateX(-50%); }
 .meeting-float:hover { border-color: rgba(255,255,255,.28); background: #333334; transform: translateX(-50%) translateY(-1px); }
 .meeting-float b { color: #cec8ff; font-size: 13px; }
+.meeting-float.paused { border-color: rgba(244,190,63,.32); background: rgba(60,51,31,.96); }
+.meeting-float.paused .mf-dot { background: #e9b53b; animation: none; }
+.meeting-float.saving .mf-dot { background: #a79cff; }
 .mf-dot { width: 8px; height: 8px; border-radius: 50%; background: #f15570; animation: fade 1s infinite; }
 .mf-count { color: rgba(255,255,255,.72); font-size: 11px; font-weight: 800; }
 .mf-bar { width: 74px; height: 5px; overflow: hidden; border-radius: 3px; background: rgba(255,255,255,.14); }
@@ -1029,6 +1061,13 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
   .direction-grid { grid-template-columns: 1fr; }
   button.direction-card { min-height: 0; }
   .direction-card > small { display: none; }
+  .meeting-runtime { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .checkpoint-meta { width: 100%; text-align: left; }
+  .human-compose { grid-template-columns: 1fr; }
+  .human-actions { min-width: 0; flex-direction: row; }
+  .human-actions button { flex: 1; }
+  .cancel-confirm { align-items: stretch; flex-wrap: wrap; }
+  .cancel-confirm span { width: 100%; }
   .build-direction { grid-template-columns: 34px minmax(0, 1fr); }
   .build-mission { grid-column: 1 / -1; max-width: none; }
   .live-agent-grid { grid-template-columns: 1fr; }

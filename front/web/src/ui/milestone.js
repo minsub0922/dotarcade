@@ -1,4 +1,5 @@
 import { PHASES } from '../meeting/prompts.js'
+import { isMeetingActive, isMeetingPaused, meetingStatusCopy } from '../meeting/status.js'
 
 export const MILESTONE_ACTION = Object.freeze({
   NEW_MEETING: 'new-meeting',
@@ -31,25 +32,27 @@ export function selectActiveProject(games, meeting, studio) {
 }
 
 export function getMilestoneConflict({ meeting = null, arcade = null } = {}, action) {
-  if (meeting?.status === 'running' && action !== MILESTONE_ACTION.RESUME_MEETING) return '진행 중인 제작 회의를 먼저 마쳐 주세요.'
+  if (isMeetingActive(meeting) && action !== MILESTONE_ACTION.RESUME_MEETING) return '진행 중이거나 일시정지된 제작 회의를 먼저 마쳐 주세요.'
   if (arcade && ['running', 'summarizing'].includes(arcade.status) && action !== MILESTONE_ACTION.WATCH_PLAYTEST) return '진행 중인 플레이테스트를 먼저 완료해 주세요.'
   return ''
 }
 
 export function getStudioMilestone({ games = [], meeting = null, arcade = null, studio = null, map = 'office' } = {}) {
-  const meetingActive = meeting?.status === 'running'
+  const meetingActive = isMeetingActive(meeting)
   const arcadeActive = arcade && ['running', 'summarizing'].includes(arcade.status)
 
   if (meetingActive) {
     const phaseIndex = Math.max(0, PHASES.findIndex(phase => phase.key === meeting.phase))
+    const paused = isMeetingPaused(meeting)
+    const runtime = meetingStatusCopy(meeting)
     return {
       action: MILESTONE_ACTION.RESUME_MEETING,
-      icon: '✦', tone: 'building', kicker: '제작 회의 진행 중',
-      title: meeting.phaseLabel || PHASES[phaseIndex]?.label || '제작 현황 확인',
-      detail: meeting.agenda || '팀의 제작 논의를 이어서 확인합니다.',
-      confirmTitle: '진행 중인 제작 회의로 돌아갈까요?',
-      destination: '회의 진행 화면', actionLabel: '회의 열기',
-      arrivalNote: '진행 중인 회의 화면이 자동으로 열립니다.',
+      icon: paused ? 'Ⅱ' : '✦', tone: paused ? 'warning' : 'building', kicker: runtime.label,
+      title: paused ? `${meeting.phaseLabel || PHASES[phaseIndex]?.label || '제작 회의'} · 개입 대기` : meeting.phaseLabel || PHASES[phaseIndex]?.label || '제작 현황 확인',
+      detail: paused ? '전체 팀 컨텍스트가 체크포인트에 보존되어 있습니다. 지시를 더하거나 그대로 재개할 수 있습니다.' : meeting.agenda || '팀의 제작 논의를 이어서 확인합니다.',
+      confirmTitle: paused ? '일시정지된 제작 회의를 열까요?' : '진행 중인 제작 회의로 돌아갈까요?',
+      destination: '회의 진행 화면', actionLabel: paused ? '열고 재개' : '회의 열기',
+      arrivalNote: paused ? '도착하면 팀장 개입과 재개 화면이 열립니다.' : '진행 중인 회의 화면이 자동으로 열립니다.',
       progress: ((phaseIndex + 1) / PHASES.length) * 100,
       step: `${phaseIndex + 1}/${PHASES.length}`
     }

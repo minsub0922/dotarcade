@@ -14,6 +14,12 @@ export class DB {
     try {
       this.data = JSON.parse(fs.readFileSync(dbPath, 'utf8'))
     } catch {
+      // Preserve a corrupt legacy file for diagnosis instead of silently
+      // overwriting the only copy with an empty database.
+      if (fs.existsSync(dbPath)) {
+        const quarantine = `${dbPath}.corrupt-${Date.now()}`
+        try { fs.renameSync(dbPath, quarantine) } catch { /* keep original if quarantine fails */ }
+      }
       this.data = structuredClone(EMPTY)
     }
     for (const k of Object.keys(EMPTY)) if (!(k in this.data)) this.data[k] = structuredClone(EMPTY[k])
@@ -26,7 +32,28 @@ export class DB {
   flush() {
     clearTimeout(this._t)
     this._t = null
-    fs.writeFileSync(this.path, JSON.stringify(this.data, null, 1))
+    const dir = path.dirname(this.path)
+    const temp = path.join(dir, `.${path.basename(this.path)}.${process.pid}.${Date.now()}.tmp`)
+    let fd = null
+    try {
+      fd = fs.openSync(temp, 'w')
+      fs.writeFileSync(fd, JSON.stringify(this.data, null, 1), 'utf8')
+      fs.fsyncSync(fd)
+      fs.closeSync(fd)
+      fd = null
+      fs.renameSync(temp, this.path)
+      // Persist the rename itself where the platform supports directory fsync.
+      let dirFd = null
+      try {
+        dirFd = fs.openSync(dir, 'r')
+        fs.fsyncSync(dirFd)
+      } catch { /* unsupported on some filesystems */ }
+      finally { if (dirFd != null) fs.closeSync(dirFd) }
+    } catch (error) {
+      if (fd != null) try { fs.closeSync(fd) } catch { /* already closed */ }
+      try { fs.unlinkSync(temp) } catch { /* temp may not exist */ }
+      throw error
+    }
   }
   game(id) { return this.data.games.find(g => g.id === id) }
 }

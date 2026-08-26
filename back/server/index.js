@@ -1,6 +1,7 @@
 // DOTCADE 서버 — Gemini 프록시 · git 게임 레포 · 공유 플레이어 · 브라우저별 독립 JSON DB
 import { config } from 'dotenv'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
 import express from 'express'
@@ -9,6 +10,19 @@ import { provider, llmState, detectLLM, models } from './lib/gemini.js'
 import { tavily } from './lib/tavily.js'
 import { runReferenceResearch } from './lib/reference-research.js'
 import { seedDefaults } from './lib/seed.js'
+import {
+  cancelMeetingRecord,
+  commitMeetingMutation,
+  createMeetingInStore,
+  getActiveMeetingRecord,
+  getMeetingRecord,
+  inspectGameCreation,
+  inspectVersionRelease,
+  interruptMeetingRecord,
+  patchMeetingRecord,
+  putMeetingCheckpoint,
+  resumeMeetingRecord
+} from './lib/meeting-checkpoints.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 config({ path: path.join(ROOT, '..', '.env') })
@@ -126,6 +140,31 @@ app.post('/api/rag/query', async (req, res) => {
 
 // ---------------- games ----------------
 const publicGame = g => ({ ...g })
+const releaseInflight = new Map()
+
+const httpError = (status, message, code = null) => {
+  const error = new Error(message)
+  error.status = status
+  error.code = code
+  return error
+}
+
+const withReleaseLock = (key, task) => {
+  if (releaseInflight.has(key)) return releaseInflight.get(key)
+  const promise = Promise.resolve().then(task).finally(() => {
+    if (releaseInflight.get(key) === promise) releaseInflight.delete(key)
+  })
+  releaseInflight.set(key, promise)
+  return promise
+}
+
+const sendRouteError = (res, error, fallbackStatus = 500) => {
+  const status = Number(error?.status) || fallbackStatus
+  const body = { error: String(error?.message || error) }
+  if (error?.code) body.code = error.code
+  if (error?.details) body.details = error.details
+  return res.status(status).json(body)
+}
 
 app.get('/api/games', (req, res) => res.json({ games: req.p.db.data.games.map(publicGame) }))
 
@@ -138,43 +177,82 @@ app.get('/api/games/:id', (req, res) => {
 app.post('/api/games', async (req, res) => {
   try {
     const { db, repos } = req.p
-    const { id, title, desc, genre, emoji, color, controls, files, message, meetingId } = req.body
-    if (db.game(id)) return res.status(409).json({ error: '이미 존재하는 id' })
+    const { id, title, desc, genre, emoji, color, controls, files, message, meetingId } = req.body || {}
+    if (!id) return res.status(400).json({ error: 'id 필요' })
     if (!files?.['game.js']) return res.status(400).json({ error: 'game.js 필요' })
-    await repos.create(id, files, message || `${title} v1.0.0`, 'v1.0.0')
-    const now = new Date().toISOString()
-    const g = {
-      id, title: title || id, desc: desc || '', genre: genre || '아케이드',
-      emoji: emoji || '🎮', color: color || '#b78cff', controls: controls || [],
-      version: 'v1.0.0', versions: [{ v: 'v1.0.0', date: now, message: message || '최초 릴리즈' }],
-      source: 'meeting', createdAt: now, updatedAt: now, feedback: {}, meetings: meetingId ? [meetingId] : []
-    }
-    db.data.games.push(g); db.save()
-    res.json({ game: g })
-  } catch (e) { res.status(500).json({ error: String(e.message || e) }) }
+    // Every release mutates a git repository and the profile DB. Serialize those
+    // effects per profile so two meetings cannot both pass preflight and race on
+    // the same repository/tag (or create vs. version operations).
+    const key = `${req.p.id}:release`
+    const result = await withReleaseLock(key, async () => {
+      // A lost HTTP response must not make one meeting publish a second game.
+      const decision = inspectGameCreation(db.data.games, { meetingId, gameId: id })
+      if (decision.action === 'existing') return { game: decision.game, idempotent: true }
+      if (decision.action === 'conflict') {
+        throw httpError(409, '이미 존재하는 id', 'GAME_ID_CONFLICT')
+      }
+
+      await repos.create(id, files, message || `${title} v1.0.0`, 'v1.0.0')
+      const now = new Date().toISOString()
+      const version = { v: 'v1.0.0', date: now, message: message || '최초 릴리즈' }
+      if (meetingId) version.meetingId = meetingId
+      const game = {
+        id, title: title || id, desc: desc || '', genre: genre || '아케이드',
+        emoji: emoji || '🎮', color: color || '#b78cff', controls: controls || [],
+        version: 'v1.0.0', versions: [version],
+        source: 'meeting', createdAt: now, updatedAt: now, feedback: {}, meetings: meetingId ? [meetingId] : []
+      }
+      db.data.games.push(game)
+      db.flush()
+      return { game, idempotent: false }
+    })
+    res.json(result)
+  } catch (e) { sendRouteError(res, e) }
 })
 
 app.post('/api/games/:id/versions', async (req, res) => {
   try {
     const { db, repos } = req.p
-    const g = db.game(req.params.id)
-    if (!g) return res.status(404).json({ error: 'not found' })
-    const { files, message, version, meetingId } = req.body
+    const { files, message, version, meetingId } = req.body || {}
     if (!version) return res.status(400).json({ error: 'version 필요' })
-    await repos.addVersion(g.id, files || {}, message || `release ${version}`, version)
-    const now = new Date().toISOString()
-    g.version = version
-    g.versions.push({ v: version, date: now, message: message || '' })
-    if (meetingId) g.meetings.push(meetingId)
-    if (files?.['meta.json']) {
-      try {
-        const m = JSON.parse(files['meta.json'])
-        Object.assign(g, { title: m.title ?? g.title, desc: m.desc ?? g.desc, controls: m.controls ?? g.controls })
-      } catch {}
-    }
-    g.updatedAt = now; db.save()
-    res.json({ game: g })
-  } catch (e) { res.status(500).json({ error: String(e.message || e) }) }
+    const key = `${req.p.id}:release`
+    const result = await withReleaseLock(key, async () => {
+      const game = db.game(req.params.id)
+      if (!game) throw httpError(404, 'not found', 'GAME_NOT_FOUND')
+      game.versions ||= []
+      game.meetings ||= []
+
+      const decision = inspectVersionRelease(game, { meetingId, version })
+      if (decision.action === 'existing') {
+        // Older records did not put meetingId on the version entry. The game-level
+        // meeting ledger is enough to safely backfill that identity once.
+        if (decision.reason === 'legacy-meeting-ledger') {
+          decision.version.meetingId ||= meetingId
+          db.flush()
+        }
+        return { game, idempotent: true, releasedVersion: decision.version.v }
+      }
+      if (decision.action === 'conflict') {
+        throw httpError(409, '이미 존재하는 버전', 'GAME_VERSION_CONFLICT')
+      }
+
+      await repos.addVersion(game.id, files || {}, message || `release ${version}`, version)
+      const now = new Date().toISOString()
+      game.version = version
+      game.versions.push({ v: version, date: now, message: message || '', ...(meetingId ? { meetingId } : {}) })
+      if (meetingId && !game.meetings.includes(meetingId)) game.meetings.push(meetingId)
+      if (files?.['meta.json']) {
+        try {
+          const meta = JSON.parse(files['meta.json'])
+          Object.assign(game, { title: meta.title ?? game.title, desc: meta.desc ?? game.desc, controls: meta.controls ?? game.controls })
+        } catch {}
+      }
+      game.updatedAt = now
+      db.flush()
+      return { game, idempotent: false, releasedVersion: version }
+    })
+    res.json(result)
+  } catch (e) { sendRouteError(res, e) }
 })
 
 app.get('/api/games/:id/files', async (req, res) => {
@@ -256,18 +334,96 @@ app.delete('/api/games/:id', (req, res) => {
 
 // ---------------- meetings & chats ----------------
 app.get('/api/meetings', (req, res) => res.json({ meetings: req.p.db.data.meetings.slice(-30) }))
-app.post('/api/meetings', (req, res) => {
-  const { db } = req.p
-  const m = { id: 'm' + Date.now(), ...req.body, startedAt: new Date().toISOString() }
-  db.data.meetings.push(m); db.save()
-  res.json({ meeting: m })
+
+app.get('/api/meetings/active', (req, res) => {
+  res.json({ meeting: getActiveMeetingRecord(req.p.db.data.meetings) })
 })
+
+app.post('/api/meetings', (req, res) => {
+  try {
+    const { db } = req.p
+    const meeting = commitMeetingMutation(db, meetings =>
+      createMeetingInStore(meetings, req.body || {}, {
+        id: `m${randomUUID().replaceAll('-', '')}`
+      })
+    )
+    res.json({ meeting })
+  } catch (error) { sendRouteError(res, error) }
+})
+
+app.get('/api/meetings/:id', (req, res) => {
+  try {
+    res.json({ meeting: getMeetingRecord(req.p.db.data.meetings, req.params.id) })
+  } catch (error) { sendRouteError(res, error) }
+})
+
+app.get('/api/meetings/:id/checkpoint', (req, res) => {
+  try {
+    const meeting = getMeetingRecord(req.p.db.data.meetings, req.params.id)
+    res.json({ meeting, checkpoint: meeting.checkpoint || null })
+  } catch (error) { sendRouteError(res, error) }
+})
+
+app.put('/api/meetings/:id/checkpoint', (req, res) => {
+  try {
+    const { db } = req.p
+    const meeting = commitMeetingMutation(db, meetings => putMeetingCheckpoint(
+      meetings,
+      req.params.id,
+      req.body || {}
+    ))
+    res.json({ meeting, checkpoint: meeting.checkpoint })
+  } catch (error) { sendRouteError(res, error) }
+})
+
+app.post('/api/meetings/:id/interrupt', (req, res) => {
+  try {
+    const { db } = req.p
+    const meeting = commitMeetingMutation(db, meetings => interruptMeetingRecord(
+      meetings,
+      req.params.id,
+      req.body || {}
+    ))
+    res.json({ meeting, checkpoint: meeting.checkpoint })
+  } catch (error) { sendRouteError(res, error) }
+})
+
+app.post('/api/meetings/:id/resume', (req, res) => {
+  try {
+    const { db } = req.p
+    const meeting = commitMeetingMutation(db, meetings => resumeMeetingRecord(
+      meetings,
+      req.params.id,
+      req.body || {}
+    ))
+    res.json({ meeting, checkpoint: meeting.checkpoint })
+  } catch (error) { sendRouteError(res, error) }
+})
+
+app.post('/api/meetings/:id/cancel', (req, res) => {
+  try {
+    const { db } = req.p
+    const meeting = commitMeetingMutation(db, meetings => cancelMeetingRecord(
+      meetings,
+      req.params.id,
+      req.body || {}
+    ))
+    res.json({ meeting, checkpoint: meeting.checkpoint })
+  } catch (error) { sendRouteError(res, error) }
+})
+
 app.patch('/api/meetings/:id', (req, res) => {
-  const { db } = req.p
-  const m = db.data.meetings.find(x => x.id === req.params.id)
-  if (!m) return res.status(404).json({ error: 'not found' })
-  Object.assign(m, req.body); db.save()
-  res.json({ meeting: m })
+  try {
+    const { db } = req.p
+    const { expectedRevision, ...patch } = req.body || {}
+    const meeting = commitMeetingMutation(db, meetings => patchMeetingRecord(
+      meetings,
+      req.params.id,
+      patch,
+      { expectedRevision }
+    ))
+    res.json({ meeting })
+  } catch (error) { sendRouteError(res, error) }
 })
 
 app.get('/api/chats/:agent', (req, res) => res.json({ history: req.p.db.data.chats[req.params.agent] || [] }))

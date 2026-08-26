@@ -1,6 +1,12 @@
 // DOTCADE — 서버 API 클라이언트 (+SSE 스트리밍 리더)
 const J = r => {
-  if (!r.ok) return r.json().catch(() => ({})).then(b => { throw new Error(b.error || `HTTP ${r.status}`) })
+  if (!r.ok) return r.json().catch(() => ({})).then(b => {
+    const error = new Error(b.error || `HTTP ${r.status}`)
+    error.status = r.status
+    error.code = b.code || null
+    error.details = b.details || null
+    throw error
+  })
   return r.json()
 }
 
@@ -8,14 +14,14 @@ export const api = {
   config: () => fetch('/api/config').then(J),
   redetect: () => fetch('/api/config/redetect', { method: 'POST' }).then(J),
 
-  generate: body => fetch('/api/llm/generate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  generate: (body, { signal } = {}) => fetch('/api/llm/generate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }).then(J),
 
   // SSE stream → onDelta(text) 콜백, 최종 {text, sources} 반환
-  async stream(body, onDelta) {
+  async stream(body, onDelta, { signal } = {}) {
     const r = await fetch('/api/llm/stream', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
     })
     if (!r.ok || !r.body) throw new Error(`stream HTTP ${r.status}`)
     const reader = r.body.getReader(); const dec = new TextDecoder()
@@ -40,14 +46,14 @@ export const api = {
   },
 
   // Tavily 웹 검색 (서버가 키 로테이션 처리)
-  search: (query, maxResults = 5) => fetch('/api/search', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, maxResults })
+  search: (query, maxResults = 5, { signal } = {}) => fetch('/api/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, maxResults }), signal
   }).then(J),
 
   // 기획 기반 게임/UI 레퍼런스 탐색. SSE로 키워드·병렬 검색·타겟 선정 진행 상황을 전달한다.
-  async referenceResearch(body, onProgress) {
+  async referenceResearch(body, onProgress, { signal } = {}) {
     const r = await fetch('/api/reference-research/stream', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
     })
     if (!r.ok || !r.body) throw new Error(`reference research HTTP ${r.status}`)
     const reader = r.body.getReader(); const dec = new TextDecoder()
@@ -73,7 +79,7 @@ export const api = {
 
   ragUpsert: docs => fetch('/api/rag/upsert', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ docs })
-  }).then(J).catch(() => ({})),
+  }).then(J),
   ragQuery: (text, k = 4, filter = {}) => fetch('/api/rag/query', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, k, filter })
   }).then(J).catch(() => ({ results: [] })),
@@ -89,7 +95,7 @@ export const api = {
   files: (id, ref) => fetch(`/api/games/${id}/files${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`).then(J),
   gitlog: id => fetch(`/api/games/${id}/log`).then(J),
   diff: (id, from, to) => fetch(`/api/games/${id}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`).then(J),
-  bundle: (id, v) => fetch(`/api/games/${id}/bundle${v ? `?v=${encodeURIComponent(v)}` : ''}`).then(J),
+  bundle: (id, v, { signal } = {}) => fetch(`/api/games/${id}/bundle${v ? `?v=${encodeURIComponent(v)}` : ''}`, { signal }).then(J),
   saveFeedback: (id, body) => fetch(`/api/games/${id}/feedback`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }).then(J),
@@ -97,9 +103,24 @@ export const api = {
   createMeeting: body => fetch('/api/meetings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }).then(J),
+  meetings: ({ resumable = false } = {}) => fetch(`/api/meetings${resumable ? '?resumable=1' : ''}`).then(J),
+  meeting: id => fetch(`/api/meetings/${encodeURIComponent(id)}`).then(J),
+  activeMeeting: () => fetch('/api/meetings/active').then(J),
+  putMeetingCheckpoint: (id, body) => fetch(`/api/meetings/${encodeURIComponent(id)}/checkpoint`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(J),
+  interruptMeeting: (id, body) => fetch(`/api/meetings/${encodeURIComponent(id)}/interrupt`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(J),
+  resumeMeeting: (id, body) => fetch(`/api/meetings/${encodeURIComponent(id)}/resume`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(J),
+  cancelMeeting: (id, body) => fetch(`/api/meetings/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(J),
   patchMeeting: (id, body) => fetch(`/api/meetings/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  }).then(J).catch(() => ({})),
+  }).then(J),
 
   chatHistory: agent => fetch(`/api/chats/${agent}`).then(J),
   chatAppend: (agent, messages) => fetch(`/api/chats/${agent}`, {

@@ -9,7 +9,8 @@ const DEFAULT_STUDIO = {
   releaseStreak: 0,
   releases: 0,
   activeMission: null,
-  lastReward: null
+  lastReward: null,
+  releaseRewards: {}
 }
 
 const readLocal = (key, fallback) => {
@@ -51,6 +52,7 @@ export const useStore = create((set, get) => ({
   // 회의
   meeting: null, // {id, agenda, phase, transcript:[], research, directionGate?, direction?, artifacts, status, reward?}
   setMeeting: patch => set(s => ({ meeting: patch === null ? null : { ...(s.meeting || {}), ...patch } })),
+  replaceMeeting: meeting => set({ meeting }),
   pushTranscript: entry => set(s => {
     if (!s.meeting) return {}
     const t = [...s.meeting.transcript]
@@ -110,8 +112,11 @@ export const useStore = create((set, get) => ({
     set({ studio })
     return reward
   },
-  awardRelease: ({ title, version, gameId, qaOk, upgrade = false, directionId = '', mission = null }) => {
+  awardRelease: ({ releaseId = null, title, version, gameId, qaOk, upgrade = false, directionId = '', mission = null }) => {
     const prev = get().studio || DEFAULT_STUDIO
+    // A resumed release may retry this local effect after the server already
+    // committed the game. Keep rewards exactly-once by durable meeting id.
+    if (releaseId && prev.releaseRewards?.[releaseId]) return prev.releaseRewards[releaseId]
     const nextStreak = qaOk ? (prev.releaseStreak || 0) + 1 : 0
     // 출시 자체는 작은 보상. 큰 보상은 activeMission을 평가하는 오락실 결과에서 지급한다.
     const xp = 20 + (qaOk ? 10 : 0) + (upgrade ? 5 : 0) + (directionId ? 5 : 0)
@@ -141,7 +146,10 @@ export const useStore = create((set, get) => ({
       releaseStreak: nextStreak,
       releases: (prev.releases || 0) + 1,
       activeMission,
-      lastReward: reward
+      lastReward: reward,
+      releaseRewards: releaseId
+        ? { ...(prev.releaseRewards || {}), [releaseId]: reward }
+        : (prev.releaseRewards || {})
     }
     saveStudio(studio)
     set({ studio })

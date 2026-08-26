@@ -431,8 +431,14 @@ export function syntaxCheck(code) {
 }
 
 // mountEl이 주어지면 그 안에 라이브 프리뷰로 표시 (rAF 스로틀 방지 겸 관전 요소)
-export function runSmokeTest(code, { mountEl, durationMs = 9000, seed = 12345, bot, strictVisual = false, requiredScreens = [], referenceContract = null, designContract = null } = {}) {
-  return new Promise(resolve => {
+export function runSmokeTest(code, { mountEl, durationMs = 9000, seed = 12345, bot, strictVisual = false, requiredScreens = [], referenceContract = null, designContract = null, signal = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const aborted = () => {
+      const error = new Error('QA smoke test aborted')
+      error.name = 'AbortError'
+      return error
+    }
+    if (signal?.aborted) return reject(aborted())
     const syn = syntaxCheck(code)
     if (!syn.ok) {
       return resolve({ pass: false, diagnostics: { fatal: `구문 오류: ${syn.error}`, errors: [], ready: false } })
@@ -449,20 +455,43 @@ export function runSmokeTest(code, { mountEl, durationMs = 9000, seed = 12345, b
       overFired: false, lit: null, presses: 0, ms: 0,
       visual: strictVisual ? visualQualityCheck(code, null, null, { requiredScreens, referenceContract, designContract, requireRuntimeQuality: true }) : null
     }
-    const game = mountGame(host, code, { mode: 'bot', seed, quality: strictVisual, bot: bot || { aggression: 0.65, intervalMs: 130, holdMs: 150, durationMs: durationMs - 1200 } })
+    let game = null
+    let killT = null
+    let settled = false
+    const cleanup = () => {
+      if (killT) clearTimeout(killT)
+      signal?.removeEventListener?.('abort', abort)
+      game?.dispose?.()
+      if (temp) host.remove()
+    }
+    const abort = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(aborted())
+    }
     const finish = () => {
-      clearTimeout(killT)
+      if (settled) return
+      settled = true
       if (strictVisual) d.visual = visualQualityCheck(code, d.meta, d.draw, {
         requiredScreens, referenceContract, designContract, requireRuntimeQuality: true, terminalExpected: d.overFired
       })
-      game.dispose()
-      if (temp) host.remove()
       const pass = d.ready && !d.fatal && d.errors.length === 0 &&
         (d.lit === null || d.lit >= 15) && (d.scoreChanged || d.overFired) &&
         (!strictVisual || d.visual?.ok)
+      cleanup()
       resolve({ pass, diagnostics: d })
     }
-    const killT = setTimeout(finish, durationMs + 2500)
+    signal?.addEventListener?.('abort', abort, { once: true })
+    try {
+      game = mountGame(host, code, { mode: 'bot', seed, quality: strictVisual, bot: bot || { aggression: 0.65, intervalMs: 130, holdMs: 150, durationMs: durationMs - 1200 } })
+    } catch (error) {
+      settled = true
+      cleanup()
+      reject(error)
+      return
+    }
+    killT = setTimeout(finish, durationMs + 2500)
     game.on(m => {
       if (m.type === 'ready') {
         d.ready = true
