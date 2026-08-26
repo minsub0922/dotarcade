@@ -7,6 +7,7 @@ import express from 'express'
 import { ensureSeed, seedCtx, profileMiddleware } from './lib/profiles.js'
 import { provider, llmState, detectLLM, models } from './lib/gemini.js'
 import { tavily } from './lib/tavily.js'
+import { runReferenceResearch } from './lib/reference-research.js'
 import { seedDefaults } from './lib/seed.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -76,6 +77,42 @@ app.get('/api/search/health', async (req, res) => {
   res.json({ keys: await tavily.health() })
 })
 app.get('/api/search/state', (req, res) => res.json({ enabled: tavily.enabled(), state: tavily.state() }))
+
+// ---------------- game/UI reference research ----------------
+// 일반 JSON 응답과 진행 상황이 필요한 SSE 응답을 함께 제공한다.
+const referenceDeps = emit => ({
+  emit,
+  search: tavily.enabled() ? (query, options) => tavily.search(query, options) : null,
+  generate: llmState.mode === 'live' ? options => provider().generate(options) : null
+})
+
+app.post('/api/reference-research', async (req, res) => {
+  try {
+    res.json(await runReferenceResearch(req.body || {}, referenceDeps()))
+  } catch (e) {
+    const message = String(e.message || e)
+    res.status(message === 'agenda 필요' ? 400 : 502).json({ error: message })
+  }
+})
+
+app.post('/api/reference-research/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders?.()
+  let closed = false
+  res.on('close', () => { closed = true })
+  const send = payload => {
+    if (!closed && !res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`)
+  }
+  try {
+    const result = await runReferenceResearch(req.body || {}, referenceDeps(progress => send({ type: 'progress', progress })))
+    send({ type: 'done', result })
+  } catch (e) {
+    send({ type: 'error', error: String(e.message || e) })
+  }
+  if (!res.writableEnded) res.end()
+})
 
 // ---------------- RAG ----------------
 app.post('/api/rag/upsert', async (req, res) => {

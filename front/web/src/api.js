@@ -44,6 +44,33 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, maxResults })
   }).then(J),
 
+  // 기획 기반 게임/UI 레퍼런스 탐색. SSE로 키워드·병렬 검색·타겟 선정 진행 상황을 전달한다.
+  async referenceResearch(body, onProgress) {
+    const r = await fetch('/api/reference-research/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    })
+    if (!r.ok || !r.body) throw new Error(`reference research HTTP ${r.status}`)
+    const reader = r.body.getReader(); const dec = new TextDecoder()
+    let buf = '', final = null
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const parts = buf.split('\n\n'); buf = parts.pop()
+      for (const part of parts) {
+        const line = part.split('\n').find(item => item.startsWith('data:'))
+        if (!line) continue
+        let event
+        try { event = JSON.parse(line.slice(5)) } catch { continue }
+        if (event.type === 'progress') onProgress?.(event.progress)
+        if (event.type === 'done') final = event.result
+        if (event.type === 'error') throw new Error(event.error || 'reference research failed')
+      }
+    }
+    if (!final) throw new Error('reference research 결과가 없습니다')
+    return final
+  },
+
   ragUpsert: docs => fetch('/api/rag/upsert', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ docs })
   }).then(J).catch(() => ({})),
