@@ -16,26 +16,26 @@ export default function Settings() {
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && closePanel()}>
-      <div className="modal">
+      <div className="modal settings-modal">
         <div className="modal-head"><b>⚙️ 설정</b><button className="x" onClick={closePanel}>✕</button></div>
         <div className="detail-body">
           <div className="field">
             <label>LLM 상태</label>
-            <div className="sys-line">
+            <div className="sys-line settings-status">
               모드: <b className={config.llm}>{config.llm === 'live' ? '⚡ Gemini 연결됨' : '🧪 모의(mock) 모드'}</b>
               {config.llmError && <div className="tiny err">{config.llmError}</div>}
               <div className="tiny muted">smart: {config.models?.smart} · fast: {config.models?.fast}</div>
               <div className="tiny muted">API 키와 모델은 프로젝트 루트의 <code>.env</code> 파일에서 관리합니다. 수정 후 서버를 재시작하세요.</div>
-              <button onClick={redetect} style={{ marginTop: 6 }}>연결 다시 감지</button>
+              <button className="settings-reconnect" onClick={redetect}>연결 다시 감지</button>
             </div>
           </div>
           <div className="field">
             <label>회의 자동 진행 (승인 게이트 자동 통과)</label>
-            <button className={settings.autoApprove ? 'primary' : ''} onClick={() => setSettings({ autoApprove: !settings.autoApprove })}>
+            <button className={`settings-toggle ${settings.autoApprove ? 'primary on' : ''}`} onClick={() => setSettings({ autoApprove: !settings.autoApprove })}>
               {settings.autoApprove ? 'ON — 자동 승인 (6초 대기)' : 'OFF — 직접 승인 필요'}
             </button>
           </div>
-          <div className="field">
+          <div className="field range-field">
             <label>오락실 동시 시뮬레이션 수: {settings.simConcurrency}</label>
             <input type="range" min="1" max="6" value={settings.simConcurrency}
               onChange={e => setSettings({ simConcurrency: +e.target.value })} />

@@ -5,7 +5,7 @@ import Markdown from './Markdown.jsx'
 import Radar from './Radar.jsx'
 import { CRITERIA, strongWeak } from '../data/criteria.js'
 
-export default function Library({ onPlay, onUpgrade, onDeploy }) {
+export default function Library({ onPlay, onUpgrade, onDeploy, portable = false }) {
   const games = useStore(s => s.games)
   const closePanel = useStore(s => s.closePanel)
   const toast = useStore(s => s.toast)
@@ -45,8 +45,9 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
   if (!game) {
     return (
       <div className="modal-back" onClick={e => e.target === e.currentTarget && closePanel()}>
-        <div className="modal">
-          <div className="modal-head"><b>🗄️ 게임팩 진열대</b><button className="x" onClick={closePanel}>✕</button></div>
+        <div className={`modal library-modal library-overview ${portable ? 'portable-library' : ''}`}>
+          <div className="modal-head library-head"><div className="modal-title-block"><span className="modal-kicker">{portable ? 'DOTCADE POCKET · GAME SELECT' : 'MY RELEASES'}</span><b>{portable ? '▣ 휴대 플레이용 게임팩' : '🗄️ 게임팩 진열대'}</b></div><span className="library-count">{games.length}개 출시</span><button className="x" onClick={closePanel}>✕</button></div>
+          {portable && <div className="portable-library-banner"><i />휴대기가 연결되었습니다 <b>게임팩을 선택하면 POCKET 모드로 바로 부팅합니다</b></div>}
           <div className="game-grid">
             {games.map(g => {
               const fb = g.feedback?.[g.version]
@@ -82,11 +83,12 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
   const fb = game.feedback?.[game.version]
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && closePanel()}>
-      <div className="modal big">
-        <div className="modal-head">
-          <button onClick={() => setSel(null)}>←</button>
-          <b>{game.emoji} {game.title}</b> <span className="ver">{game.version}</span>
-          <span className="muted tiny" style={{ flex: 1 }}>{game.desc}</span>
+      <div className={`modal big library-modal library-detail library-tab-${tab} ${portable ? 'portable-library' : ''}`}>
+        <div className="modal-head library-head">
+          <button className="back-button" onClick={() => setSel(null)} aria-label="게임 목록으로 돌아가기">←</button>
+          <div className="library-title"><b>{game.emoji} {game.title}</b><span className="muted tiny">{game.desc}</span></div>
+          {portable && <span className="portable-ready"><i />POCKET READY</span>}
+          <span className="ver">{game.version}</span>
           <button className="x" onClick={closePanel}>✕</button>
         </div>
         <div className="tabs">
@@ -100,7 +102,7 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
         {tab === 'info' && (
           <div className="detail-body">
             <div className="actions">
-              <button className="primary" onClick={() => onPlay(game.id)}>▶ 플레이</button>
+              <button className="primary" onClick={() => onPlay(game.id)}>{portable ? '▣ POCKET에서 시작' : '▶ 플레이'}</button>
               <button className="accent" onClick={() => { closePanel(); onDeploy(game) }}>🕹️ 오락실 배포 & 20명 시뮬레이션</button>
               <button onClick={() => onUpgrade(game)}>🧠 업그레이드 회의</button>
               <button onClick={share}>🔗 공유 링크 복사</button>
@@ -162,7 +164,7 @@ export default function Library({ onPlay, onUpgrade, onDeploy }) {
                         <b className="ver">{t.v}</b>
                         <span className="tiny muted">{t.date?.slice(0, 16)}</span>
                         <span style={{ flex: 1 }}>{t.message}</span>
-                        <button onClick={() => onPlay(game.id, t.v)}>▶</button>
+                        <button onClick={() => onPlay(game.id, t.v)}>{portable ? '▣' : '▶'}</button>
                         {prev && <button onClick={() => showDiff(prev.v, t.v)}>diff</button>}
                       </div>
                     )

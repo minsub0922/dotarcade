@@ -4,6 +4,7 @@ import { api } from './api.js'
 import { Engine } from './engine/world.js'
 import { MeetingEngine } from './meeting/engine.js'
 import { ArcadeSim } from './arcade/sim.js'
+import { startOfficeHandheldAmbience } from './arcade/portable.js'
 import { TEAM, PLAYER, VISITORS } from './data/personas.js'
 import HUD from './ui/HUD.jsx'
 import ChatPanel from './ui/ChatPanel.jsx'
@@ -25,17 +26,20 @@ export default function App() {
   const meetRef = useRef(null)
   const simRef = useRef(null)
   const [ready, setReady] = useState(false)
-  const { panel, map, hint } = useStore()
+  const [zoom, setZoom] = useState(1)
+  const { panel, panelData, map, hint } = useStore()
 
   // ---------- boot ----------
   useEffect(() => {
     let alive = true
+    let resizeObserver = null
+    let stopHandheldAmbience = null
     ;(async () => {
       // 프로필 쿠키 발급을 위해 config를 먼저 (첫 접속 시 브라우저별 DB 생성)
       const cfg = await api.config().catch(() => ({ llm: 'unknown', models: {}, offline: true }))
       const [maps, manifest, gl] = await Promise.all([
         fetch('/assets/maps.json').then(r => r.json()),
-        fetch('/assets/sprites/sprites.json').then(r => r.json()),
+        fetch('/assets/sprites_v2/sprites.json').then(r => r.json()),
         api.games().catch(() => ({ games: [] }))
       ])
       if (!alive) return
@@ -49,7 +53,9 @@ export default function App() {
         maps: { office: maps.office, arcade: maps.arcade },
         manifest,
         onHint: h => useStore.getState().setHint(h),
-        onInteract: () => {}
+        onInteract: event => {
+          if (event?.type === 'handheld' || event?.type === 'portable') interact(event)
+        }
       })
       // 타일 상수 공유
       eng.maps.office.collision = maps.office.collision
@@ -71,8 +77,22 @@ export default function App() {
         e.meta.shortName = m.name
         eng.sit(m.id, s.desk, s.face)
       })
+      stopHandheldAmbience = startOfficeHandheldAmbience(eng, TEAM, () => useStore.getState())
       eng.setShelfGames(gl.games)
+      eng.setZoom(1)
       eng.start()
+      const resizeWorld = () => {
+        const rect = cvRef.current?.getBoundingClientRect()
+        if (rect?.width && rect?.height) eng.resizeViewport(rect.width, rect.height, window.devicePixelRatio || 1)
+      }
+      resizeWorld()
+      if ('ResizeObserver' in window) {
+        resizeObserver = new ResizeObserver(resizeWorld)
+        resizeObserver.observe(cvRef.current)
+      } else {
+        window.addEventListener('resize', resizeWorld)
+        resizeObserver = { disconnect: () => window.removeEventListener('resize', resizeWorld) }
+      }
       setReady(true)
 
       // 첫 접속(브라우저 프로필 기준) 시 도움말 가이드 표시
@@ -82,7 +102,7 @@ export default function App() {
         localStorage.setItem(visitedKey, '1')
       }
     })()
-    return () => { alive = false; engRef.current?.stop() }
+    return () => { alive = false; resizeObserver?.disconnect(); stopHandheldAmbience?.(); engRef.current?.stop() }
   }, [])
 
   // ---------- keyboard ----------
@@ -90,14 +110,18 @@ export default function App() {
     const eng = () => engRef.current
     const kd = e => {
       const st = useStore.getState()
-      const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)
-      if (!typing) {
+      const active = document.activeElement
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName) || active?.isContentEditable
+      if (!typing && !st.panel) {
         if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(e.code)) {
           eng()?.keys.add(e.code)
           if (e.code.startsWith('Arrow')) e.preventDefault()
         }
-        if (e.code === 'KeyE' || e.code === 'Enter') {
-          if (st.hint && !st.panel) interact(st.hint)
+        if (!e.repeat && (e.code === 'KeyE' || e.code === 'Enter') && active?.tagName !== 'BUTTON') {
+          if (st.hint) interact(st.hint)
+        }
+        if (!e.repeat && e.code === 'KeyF') {
+          if (eng()?.throwHeld()) e.preventDefault()
         }
       }
       if (e.code === 'Escape') {
@@ -117,6 +141,12 @@ export default function App() {
   function interact(h) {
     const st = useStore.getState()
     const eng = engRef.current
+    if (h.type === 'handheld' || h.type === 'portable') {
+      st.openPanel('library', { portable: true, sourceId: h.id || 'office-pocket' })
+      st.toast('▣ DOTCADE POCKET — 플레이할 게임팩을 선택하세요')
+      return
+    }
+    if (eng?.interactWorld(h)) return
     if (h.type === 'agent') {
       const e = eng.agent(h.id)
       if (e) { e.meta.chatting = true; e.path = []; e.dir = eng.player.x < e.x ? 'left' : 'right' }
@@ -159,18 +189,20 @@ export default function App() {
   }
 
   // ---------- 회의/배포 액션 ----------
-  async function startMeeting(agenda, upgradeGame) {
+  async function startMeeting(agenda, upgradeGame, options = {}) {
     const st = useStore.getState()
     if (st.meeting?.status === 'running') return st.toast('이미 회의가 진행 중입니다', 'warn')
     if (st.map === 'arcade') switchMap()
+    engRef.current?.settleFreeRoam({ silent: true })
     st.closePanel()
-    try { await meetRef.current.run(agenda, { upgradeGame }) } catch (e) { console.error(e) }
+    try { await meetRef.current.run(agenda, { upgradeGame, referenceSearch: !!options.referenceSearch }) } catch (e) { console.error(e) }
   }
 
   async function deployToArcade(game) {
     const st = useStore.getState()
     if (st.arcade?.status === 'running') return st.toast('오락실 시뮬레이션이 이미 진행 중입니다', 'warn')
     const eng = engRef.current
+    eng.settleFreeRoam({ silent: true })
     if (st.map !== 'arcade') { eng.setMap('arcade', eng.maps.arcade.spawn); st.setMap('arcade') }
     st.openPanel('arcade')
     st.toast(`🕹️ 「${game.title}」 오락실 배포 — 손님 20명 입장!`)
@@ -188,9 +220,41 @@ export default function App() {
   const arcade = useStore(s => s.arcade)
   const meeting = useStore(s => s.meeting)
   const mIdx = meeting ? Math.max(0, PHASES.findIndex(p => p.key === meeting.phase)) : 0
+  const meetingActive = meeting?.status === 'running'
+  const arcadeActive = arcade && ['running', 'summarizing'].includes(arcade.status)
+
+  function canvasPoint(e) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    return {
+      x: (e.clientX - rect.left) * (e.currentTarget.width / rect.width),
+      y: (e.clientY - rect.top) * (e.currentTarget.height / rect.height)
+    }
+  }
+
+  function moveToPointer(e) {
+    const eng = engRef.current
+    if (e.button !== 0 || !ready || panel || !eng || eng.freezePlayer) return
+    const { x, y } = canvasPoint(e)
+    e.currentTarget.focus({ preventScroll: true })
+    if (eng.interactAtPoint(x, y)) return
+    eng.walkPlayerToPoint(x, y)
+  }
+
+  function trackPointer(e) {
+    const eng = engRef.current
+    if (!eng || e.pointerType !== 'mouse') return
+    const { x, y } = canvasPoint(e)
+    eng.setPointerPosition(x, y)
+  }
+
+  function changeZoom(delta) {
+    const eng = engRef.current
+    if (!eng) return
+    setZoom(eng.setZoom(eng.camera.zoom + delta))
+  }
 
   return (
-    <div className="app">
+    <div className={`app map-${map} ${panel ? 'has-panel' : ''} ${meetingActive ? 'mode-meeting' : ''} ${arcadeActive ? 'mode-sim' : ''}`} data-phase={meeting?.phase || ''}>
       <HUD
         onLibrary={() => useStore.getState().openPanel('library')}
         onMeeting={() => useStore.getState().openPanel('meetingStart')}
@@ -198,12 +262,21 @@ export default function App() {
         onSettings={() => useStore.getState().openPanel('settings')}
         onHelp={() => useStore.getState().openPanel('help')}
       />
-      <div className="stage">
+      <div className={`stage ${map}`}>
         <div className="canvas-wrap">
-          <canvas ref={cvRef} width={1440} height={960} />
+          <canvas
+            ref={cvRef}
+            width={1440}
+            height={960}
+            onPointerDown={moveToPointer}
+            onPointerMove={trackPointer}
+            onPointerLeave={() => engRef.current?.setPointerPosition(null, null)}
+            tabIndex={0}
+            aria-label={`${map === 'office' ? '도트케이드 사무실' : '도트케이드 오락실'} 월드. WASD, 방향키 또는 클릭으로 이동하고 E로 상호작용, F로 소품을 던집니다.`}
+          />
           {!ready && <div className="boot">DOTCADE 로딩 중<span className="dots">...</span></div>}
-          {hint && !panel && <div className="hint-bar"><b>E</b> {hint.label}</div>}
-          <div className="map-badge">{map === 'office' ? '🏢 사무실' : '🕹️ 오락실'}</div>
+          {hint && !panel && <div className="hint-bar"><b>{hint.key || 'E'}</b> {hint.label}</div>}
+          <div className="map-badge"><span>{map === 'office' ? '▦' : '◆'}</span><div><b>{map === 'office' ? '사무실' : '오락실'}</b><small>{map === 'office' ? '팀원 5명과 함께' : '플레이 테스트 공간'}</small></div></div>
           {meeting?.status === 'running' && panel !== 'meeting' && (
             <button className="meeting-float" onClick={() => useStore.getState().openPanel('meeting')} title="회의 패널 열기">
               <span className="mf-dot" />
@@ -216,6 +289,19 @@ export default function App() {
         </div>
       </div>
 
+      <div className={`player-card ${meetingActive ? 'busy' : arcadeActive ? 'testing' : ''}`}>
+        <span className="player-avatar"><img src="/assets/sprites_v2/player/face.png" alt="내 아바타" /><i /></span>
+        <span className="player-copy"><b>나</b><small>{meetingActive ? '제작 지휘 중' : arcadeActive ? '플레이테스트 관전 중' : '스튜디오 팀장'}</small></span>
+        <span className="move-help"><kbd>WASD · E · F</kbd><small>이동 · 상호작용 · 던지기</small></span>
+      </div>
+
+      <div className="map-controls" aria-label="화면 배율">
+        <button onClick={() => changeZoom(-.12)} title="축소" aria-label="축소">−</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button onClick={() => changeZoom(.12)} title="확대" aria-label="확대">＋</button>
+        <button className="locate" onClick={() => engRef.current?.centerCamera(true)} title="내 위치로 이동" aria-label="내 위치로 이동">◎</button>
+      </div>
+
       {/* 시뮬 라이브 뷰 풀 (봇 플레이 실시간 화면) */}
       <div id="sim-slot-pool" className={`sim-pool ${arcade?.status === 'running' ? '' : 'off'}`}>
         {arcade?.status === 'running' && (
@@ -223,9 +309,10 @@ export default function App() {
         )}
         {arcade?.status === 'running' && (arcade.playing || []).map(id => {
           const v = VISITORS.find(x => x.id === id)
+          const live = arcade.liveAgents?.[id]
           return v ? (
-            <div key={id} className="sim-slot">
-              <div className="sim-name"><img src={`/assets/sprites/${v.id}/face.png`} alt="" />{v.name}({v.age})</div>
+            <div key={id} className={`sim-slot venue-${live?.venue || 'cabinet'}`}>
+              <div className="sim-name"><img src={`/assets/sprites_v2/${v.id}/face.png`} alt="" />{live?.venue === 'handheld' ? '▣' : '🕹'} {v.name}({v.age})</div>
               <div id={`sim-slot-${v.id}`} className="sim-frame" />
             </div>
           ) : null
@@ -233,7 +320,7 @@ export default function App() {
       </div>
 
       {/* 오락실 종합 리포트 팝업 (스트리밍) */}
-      {arcade && !arcade.reportSeen && ['summarizing', 'done'].includes(arcade.status) && (
+      {arcade && !arcade.reportSeen && ['summarizing', 'done', 'report_error'].includes(arcade.status) && (
         <ReportModal onReturnOffice={returnToOffice} />
       )}
 
@@ -241,7 +328,7 @@ export default function App() {
       {panel === 'meeting' && <MeetingPanel meet={meetRef.current} onDeploy={deployToArcade} onPlay={id => useStore.getState().openPanel('play', { gameId: id })} />}
       {panel === 'arcade' &&
         <ArcadePanel sim={simRef.current} onBack={() => { useStore.getState().closePanel(); if (useStore.getState().map === 'arcade') switchMap() }} />}
-      {panel === 'library' && <Library onPlay={(id, v) => useStore.getState().openPanel('play', { gameId: id, version: v })} onUpgrade={g => useStore.getState().openPanel('meetingStart', { upgradeGame: g })} onDeploy={deployToArcade} />}
+      {panel === 'library' && <Library portable={!!panelData?.portable} onPlay={(id, v) => useStore.getState().openPanel('play', { gameId: id, version: v, portable: !!panelData?.portable, sourceId: panelData?.sourceId })} onUpgrade={g => useStore.getState().openPanel('meetingStart', { upgradeGame: g })} onDeploy={deployToArcade} />}
       {panel === 'play' && <PlayModal />}
       {panel === 'settings' && <Settings />}
       {panel === 'meetingStart' && <MeetingStart onStart={startMeeting} />}

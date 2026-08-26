@@ -68,10 +68,10 @@ export default function ChatPanel({ world }) {
   }
 
   return (
-    <aside className="panel side">
-      <div className="panel-head" style={{ borderColor: member.color }}>
-        <img src={`/assets/sprites/${member.sprite}/face.png`} alt="" className="face" />
-        <div>
+    <aside className="panel side chat-panel">
+      <div className="panel-head agent-panel-head" style={{ '--agent-color': member.color }}>
+        <img src={`/assets/sprites_v2/${member.sprite}/face.png`} alt="" className="face" />
+        <div className="panel-title-block">
           <b>{member.name}</b> <span className="muted">{member.title}</span>
           <div className="tiny muted">{member.bmad}</div>
         </div>
@@ -81,18 +81,18 @@ export default function ChatPanel({ world }) {
         {history.length === 0 && <div className="sys-line">가까이에서 <b>E</b>를 눌러 언제든 대화할 수 있습니다. 인사를 건네보세요!</div>}
         {history.map((m, i) => (
           <div key={i} className={`msg ${m.role === 'user' ? 'me' : 'ai'}`}>
-            {m.role !== 'user' && <img src={`/assets/sprites/${member.sprite}/face.png`} className="face sm" alt="" />}
+            {m.role !== 'user' && <img src={`/assets/sprites_v2/${member.sprite}/face.png`} className="face sm" alt="" />}
             <div className="bubble-ui"><Markdown text={m.text} /></div>
           </div>
         ))}
         {streaming && (
           <div className="msg ai">
-            <img src={`/assets/sprites/${member.sprite}/face.png`} className="face sm" alt="" />
+            <img src={`/assets/sprites_v2/${member.sprite}/face.png`} className="face sm" alt="" />
             <div className="bubble-ui"><Markdown text={streaming} /><span className="caret">▌</span></div>
           </div>
         )}
       </div>
-      <div className="input-row">
+      <div className="input-row chat-compose">
         <input
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -100,7 +100,7 @@ export default function ChatPanel({ world }) {
           placeholder={`${member.name}에게 말하기...`}
           autoFocus
         />
-        <button onClick={send} disabled={busy}>{busy ? '…' : '전송'}</button>
+        <button className="primary send-button" onClick={send} disabled={busy}>{busy ? '…' : '전송'}</button>
       </div>
     </aside>
   )
