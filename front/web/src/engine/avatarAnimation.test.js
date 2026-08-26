@@ -6,7 +6,10 @@ import {
   MOUNT_DURATION,
   createWalkState,
   directionFromDelta,
+  rideDirectionFromDelta,
+  rideLayout,
   rideTransitionPose,
+  sampleRideCycle,
   sampleWalkFrame,
   sheetSource
 } from './avatarAnimation.js'
@@ -17,6 +20,52 @@ test('movement deltas map to the direction the avatar actually travels', () => {
   assert.equal(directionFromDelta(0, 8), 'down')
   assert.equal(directionFromDelta(0, -8), 'up')
   assert.equal(directionFromDelta(0, 0, 'left'), 'left')
+})
+
+test('ride direction uses hysteresis around diagonal steering', () => {
+  assert.equal(rideDirectionFromDelta(4, 4.5, 'right'), 'right')
+  assert.equal(rideDirectionFromDelta(4, 5.2, 'right'), 'down')
+  assert.equal(rideDirectionFromDelta(5.2, -4, 'up'), 'right')
+  assert.equal(rideDirectionFromDelta(-5.2, 4, 'down'), 'left')
+})
+
+test('bicycle layout mirrors the saddle and grips while preserving a seated waist anchor', () => {
+  const right = rideLayout('bicycle', 'right')
+  const left = rideLayout('bicycle', 'left')
+  assert.equal(right.seated, true)
+  assert.ok(right.cropRatio < 0.8)
+  assert.equal(left.hip.x, -right.hip.x)
+  assert.equal(left.handles[0].x, -right.handles[0].x)
+  assert.equal(left.lean, -right.lean)
+
+  const down = rideLayout('bicycle', 'down')
+  const up = rideLayout('bicycle', 'up')
+  assert.ok(down.cropRatio < right.cropRatio)
+  assert.equal(up.cropRatio, down.cropRatio)
+  const downReach = (down.handles[0].y - down.hip.y) * down.forward.y
+  const upReach = (up.handles[0].y - up.hip.y) * up.forward.y
+  assert.ok(downReach > 0)
+  assert.ok(upReach > 0)
+})
+
+test('ride cycle is travelled-distance driven and freezes while reduced', () => {
+  const start = sampleRideCycle(0, true, 'bicycle')
+  const advanced = sampleRideCycle(90, true, 'bicycle')
+  assert.notEqual(advanced.pedalPhase, start.pedalPhase)
+  assert.notEqual(advanced.wheelPhase, start.wheelPhase)
+  assert.deepEqual(sampleRideCycle(90, true, 'bicycle', true), {
+    pedalPhase: Math.PI / 4,
+    wheelPhase: 0,
+    kick: 0,
+    bob: 0
+  })
+})
+
+test('scaled wheels roll without slip and scooter travel drives a kick cycle', () => {
+  const bicycle = sampleRideCycle(14.6, true, 'bicycle')
+  assert.ok(Math.abs(bicycle.wheelPhase - 1) < 0.001)
+  const scooter = sampleRideCycle(44 * Math.PI / 2, true, 'scooter')
+  assert.ok(scooter.kick > 0.99)
 })
 
 test('walking advances idle/contact poses from travelled distance', () => {

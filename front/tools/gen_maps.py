@@ -6,6 +6,127 @@ from PIL import Image, ImageDraw
 T = 48; W, H = 30, 20; PW, PH = W*T, H*T
 OUT = os.path.join(os.path.dirname(__file__), '..', 'web', 'public', 'assets')
 
+# Runtime avatars are drawn into a 48x72 envelope and are anchored at their
+# feet.  Furniture footprints below deliberately reserve the full visual body
+# (not just the desk top's centre tile), so a roaming avatar cannot appear on
+# top of a monitor, cabinet or counter. Interactive seats, doors and centred
+# cabinet spots stay outside these solids so planners always receive a valid
+# feet-anchored destination.
+AVATAR_REFERENCE = {'frame': [48, 72], 'footprint': [24, 10], 'anchor': 'feet'}
+
+OFFICE_FURNITURE = [
+    {'id': 'plant-upper-left', 'kind': 'plant', 'footprint': [1, 2, 1, 2]},
+    {'id': 'recycle-planter', 'kind': 'plant', 'footprint': [11, 2, 2, 2]},
+    {'id': 'plant-upper-right', 'kind': 'plant', 'footprint': [27, 2, 2, 2]},
+    {'id': 'meeting-table', 'kind': 'table', 'footprint': [3, 5, 6, 2]},
+    {'id': 'desk-player', 'kind': 'desk', 'footprint': [24, 3, 3, 2], 'interaction': [25, 5]},
+    {'id': 'desk-pm', 'kind': 'desk', 'footprint': [14, 4, 3, 2], 'interaction': [15, 6]},
+    {'id': 'desk-dev1', 'kind': 'desk', 'footprint': [19, 4, 3, 2], 'interaction': [20, 6]},
+    {'id': 'desk-writer', 'kind': 'desk', 'footprint': [24, 8, 3, 2], 'interaction': [25, 10]},
+    {'id': 'desk-designer', 'kind': 'desk', 'footprint': [14, 9, 3, 2], 'interaction': [15, 11]},
+    {'id': 'desk-dev2', 'kind': 'desk', 'footprint': [19, 9, 3, 2], 'interaction': [20, 11]},
+    {'id': 'game-shelf', 'kind': 'shelf', 'footprint': [2, 13, 4, 2]},
+    {'id': 'lounge-sofa', 'kind': 'sofa', 'footprint': [12, 15, 4, 2]},
+    {'id': 'coffee-table', 'kind': 'table', 'footprint': [13, 17, 2, 1]},
+    {'id': 'pocket-station', 'kind': 'handheldStation', 'footprint': [9, 16, 1, 1], 'interaction': [9, 17]},
+    {'id': 'plant-lower-left', 'kind': 'plant', 'footprint': [1, 16, 1, 3]},
+    {'id': 'plant-lower-right', 'kind': 'plant', 'footprint': [27, 11, 2, 3]},
+]
+
+OFFICE_AISLES = [
+    {'id': 'meeting-work-lane', 'tiles': [10, 5, 3, 8]},
+    {'id': 'upper-desk-gap', 'tiles': [17, 2, 2, 7]},
+    {'id': 'lower-desk-gap', 'tiles': [17, 9, 2, 6]},
+    {'id': 'east-service-lane', 'tiles': [22, 10, 2, 7]},
+    {'id': 'vehicle-door-lane', 'tiles': [16, 17, 12, 2]},
+]
+
+# Occluder crops are measured against the 1440x960 v2 bitmap.  `baseline` is
+# the world-space foot y at which an entity starts drawing in front of the
+# crop.  A renderer can merge these entries into its existing y-sorted scene
+# and redraw the source rectangle at the same destination without maintaining
+# a second foreground asset.
+OFFICE_OCCLUDERS = [
+    {'id': 'meeting-table-front', 'source': [150, 228, 294, 119], 'baseline': 342},
+    {'id': 'desk-player-front', 'source': [1134, 151, 162, 139], 'baseline': 260},
+    {'id': 'desk-pm-front', 'source': [663, 191, 161, 139], 'baseline': 300},
+    {'id': 'desk-dev1-front', 'source': [903, 191, 161, 139], 'baseline': 300},
+    {'id': 'desk-writer-front', 'source': [1138, 411, 159, 138], 'baseline': 490},
+    {'id': 'desk-designer-front', 'source': [663, 451, 161, 139], 'baseline': 535},
+    {'id': 'desk-dev2-front', 'source': [903, 451, 161, 139], 'baseline': 535},
+    {'id': 'game-shelf-front', 'source': [96, 611, 202, 117], 'baseline': 728},
+    {'id': 'lounge-sofa-front', 'source': [574, 708, 188, 94], 'baseline': 802},
+    {'id': 'coffee-table-front', 'source': [615, 816, 101, 47], 'baseline': 863},
+]
+
+OFFICE_RESERVED = [
+    {'id': 'office-bike', 'kind': 'bicycle', 'tile': [21, 16], 'radiusTiles': 1.1},
+    {'id': 'office-scooter', 'kind': 'scooter', 'tile': [25, 16], 'radiusTiles': 1.05},
+    {'id': 'office-book-a', 'kind': 'book', 'tile': [9, 11]},
+    {'id': 'office-book-b', 'kind': 'book', 'tile': [18, 16]},
+    {'id': 'office-trash', 'kind': 'trashbin', 'tile': [27, 6]},
+]
+
+ARCADE_FURNITURE = [
+    {'id': 'plant-top-left', 'kind': 'plant', 'footprint': [1, 2, 2, 3]},
+    *[
+        {'id': f'cabinet-top-{i}', 'kind': 'cabinet', 'footprint': [tx, 2, 3, 3], 'interaction': [tx + 1, 5]}
+        for i, tx in enumerate((3, 8, 13, 18, 23))
+    ],
+    {'id': 'plant-top-right', 'kind': 'plant', 'footprint': [27, 2, 2, 3]},
+    {'id': 'cabinet-east-5', 'kind': 'cabinet', 'footprint': [27, 6, 2, 4], 'interaction': [26, 7]},
+    {'id': 'cabinet-east-6', 'kind': 'cabinet', 'footprint': [27, 10, 2, 4], 'interaction': [26, 11]},
+    {'id': 'cabinet-east-7', 'kind': 'cabinet', 'footprint': [27, 14, 2, 4], 'interaction': [26, 15]},
+    {'id': 'prize-counter', 'kind': 'counter', 'footprint': [2, 15, 5, 3]},
+    {'id': 'lounge-sofa', 'kind': 'sofa', 'footprint': [12, 10, 6, 2]},
+    {'id': 'coffee-table', 'kind': 'table', 'footprint': [14, 12, 2, 1]},
+    {'id': 'poster-kiosk-blue', 'kind': 'display', 'footprint': [23, 15, 2, 2]},
+    # Keep x=26 open: it is the established interaction spot for cabinet 7.
+    {'id': 'poster-kiosk-red', 'kind': 'display', 'footprint': [25, 15, 1, 2]},
+    {'id': 'plant-bottom-left', 'kind': 'plant', 'footprint': [1, 15, 1, 3]},
+]
+
+ARCADE_AISLES = [
+    {'id': 'cabinet-front-lane', 'tiles': [2, 5, 24, 2]},
+    {'id': 'east-service-lane', 'tiles': [25, 5, 2, 9]},
+    {'id': 'lounge-west-lane', 'tiles': [10, 7, 2, 8]},
+    {'id': 'vehicle-exit-lane', 'tiles': [8, 17, 19, 2]},
+]
+
+
+ARCADE_OCCLUDERS = [
+    {'id': 'lounge-sofa-front', 'source': [568, 470, 294, 120], 'baseline': 590},
+    {'id': 'coffee-table-front', 'source': [662, 600, 98, 52], 'baseline': 651},
+    {'id': 'prize-counter-front', 'source': [95, 702, 244, 146], 'baseline': 847},
+]
+
+ARCADE_RESERVED = [
+    {'id': 'arcade-bike', 'kind': 'bicycle', 'tile': [21, 15], 'radiusTiles': 1.1},
+    {'id': 'arcade-scooter', 'kind': 'scooter', 'tile': [18, 15], 'radiusTiles': 1.05},
+    {'id': 'arcade-book', 'kind': 'book', 'tile': [17, 17]},
+    {'id': 'arcade-trash', 'kind': 'trashbin', 'tile': [27, 18]},
+]
+
+def layout_meta(furniture, aisles, occluders, reserved):
+    return {
+        'avatarReference': AVATAR_REFERENCE,
+        'minAisleTiles': 2,
+        'furniture': furniture,
+        'aisles': aisles,
+        'occluders': occluders,
+        # Runtime props stay on walkable floor. They should contribute only a
+        # small local steering cost, never become static A* walls.
+        'reserved': reserved,
+        'dynamicAvoid': [
+            {'id': item['id'], 'tile': item['tile'], 'radiusTiles': item.get('radiusTiles', 0.65)}
+            for item in reserved
+        ],
+    }
+
+def block_furniture(block, furniture):
+    for item in furniture:
+        block(*item['footprint'])
+
 # ---------- tiny 5x5 pixel font ----------
 FONT = {
  'A':"01110 10001 11111 10001 10001",'B':"11110 10001 11110 10001 11110",
@@ -170,6 +291,10 @@ def build_office():
     # poster
     rect(d, 22*T, 12, 23*T+20, 2*T-30, (250, 210, 90), (140, 100, 40), 3)
     text_px(d, 22*T+8, 22, 'GO!', (200, 60, 60), 3)
+    # Re-apply the canonical runtime footprints after decorative drawing.
+    # This includes the rear half of each v2 desk, which used to be visually
+    # occupied but pathfinding-open and allowed avatars through monitors.
+    block_furniture(block, OFFICE_FURNITURE)
     return img, col
 
 # ---------------- ARCADE ----------------
@@ -229,7 +354,9 @@ def build_arcade():
             rect(d, scr[0]-4, scr[1]-4, scr[2]+4, scr[3]+4, (20, 20, 30), OUTL, 3)
             d.rectangle(scr, fill=(10, 14, 24))
         block(tx, ty, 2, 2)
-        spot = (tx, ty+2) if facing == 'down' else (tx-1, ty)
+        # v2 top cabinets are three visual tiles wide; keep the interaction
+        # point centred in front instead of pinning the avatar to the left leg.
+        spot = (tx+1, ty+2) if facing == 'down' else (tx-1, ty)
         cabinets.append({'id': i, 'tiles': [tx, ty, 2, 2], 'screen': list(scr), 'spot': list(spot), 'facing': facing})
     for i, tx in enumerate((3, 8, 13, 18, 23)):
         cabinet(i, tx, 3, 'down')
@@ -250,12 +377,14 @@ def build_arcade():
     block(2, 16, 5, 2)
     # vending machines bottom-right
     for i, tx in enumerate((23, 25)):
+        tw = 2 if i == 0 else 1
         x0 = tx*T
-        rect(d, x0+4, 15*T, x0+T+40, 17*T-6, (70, 130, 220) if i == 0 else (230, 90, 110), OUTL, 4)
-        d.rectangle([x0+12, 15*T+10, x0+T+8, 16*T+18], fill=(200, 230, 250))
+        x1 = x0 + tw*T - 5
+        rect(d, x0+4, 15*T, x1, 17*T-6, (70, 130, 220) if i == 0 else (230, 90, 110), OUTL, 4)
+        d.rectangle([x0+12, 15*T+10, x1-10, 16*T+18], fill=(200, 230, 250))
         for r in range(3):
-            d.rectangle([x0+16, 15*T+16+r*22, x0+T+2, 15*T+30+r*22], fill=(120, 160, 210) if i == 0 else (240, 170, 120))
-        block(tx, 15, 2, 2)
+            d.rectangle([x0+16, 15*T+16+r*22, x1-16, 15*T+30+r*22], fill=(120, 160, 210) if i == 0 else (240, 170, 120))
+        block(tx, 15, tw, 2)
     # center sofas + table
     shadow(d, 12*T+4, 11*T+22, 18*T-4, 11*T+36)
     rect(d, 12*T, 10*T+16, 18*T-10, 11*T+30, (226, 120, 90), OUTL, 3)
@@ -267,6 +396,10 @@ def build_arcade():
         for tx in range(12, 18):
             cc = [(255, 120, 180, 60), (120, 220, 255, 60), (250, 230, 120, 60), (140, 250, 160, 60)][(tx+ty) % 4]
             d.rectangle([tx*T+4, ty*T+4, tx*T+T-5, ty*T+T-5], fill=cc)
+    # v2 cabinets are visually three tiles wide/tall even though the legacy
+    # interaction shell remains 2x2.  Reserve their rendered body and keep the
+    # two-tile service lanes around them open.
+    block_furniture(block, ARCADE_FURNITURE)
     return img, col, cabinets
 
 def main():
@@ -291,23 +424,25 @@ def main():
             'meeting': {
                 'seats': [[4, 4], [6, 4], [8, 4], [4, 7], [6, 7], [8, 7]],
                 'faces': ['down', 'down', 'down', 'up', 'up', 'up'],
-                'head':  [2, 5], 'headFace': 'down',
+                'head':  [2, 7], 'headFace': 'right',
                 'zone': [2, 3, 8, 6]
             },
             'shelf': {'tiles': [2, 13, 4, 2], 'front': [[2, 15], [3, 15], [4, 15], [5, 15]]},
             'door': {'tiles': [[26, 19], [27, 19]], 'approach': [[26, 18], [27, 18]]},
-            'wander': [2, 3, 27, 16]
+            'wander': [2, 3, 27, 16],
+            'layout': layout_meta(OFFICE_FURNITURE, OFFICE_AISLES, OFFICE_OCCLUDERS, OFFICE_RESERVED)
         },
         'arcade': {
             'collision': [''.join(r) for r in acol],
             'spawn': [2, 9],
             'door': {'tiles': [[0, 9], [0, 10]], 'approach': [[1, 9], [1, 10]]},
             'cabinets': cabinets,
-            'wander': [2, 3, 27, 17]
+            'wander': [2, 3, 27, 17],
+            'layout': layout_meta(ARCADE_FURNITURE, ARCADE_AISLES, ARCADE_OCCLUDERS, ARCADE_RESERVED)
         }
     }
     with open(os.path.join(OUT, 'maps.json'), 'w') as f:
-        json.dump(maps, f)
+        json.dump(maps, f, indent=2)
     print('maps baked')
 
 if __name__ == '__main__':

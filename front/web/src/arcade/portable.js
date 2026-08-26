@@ -3,7 +3,7 @@
 // bounded A* fallback so the evaluation pipeline never waits forever.
 
 export const PORTABLE_SPOTS = {
-  office: [[11, 12], [23, 14], [10, 17], [24, 17]],
+  office: [[11, 12], [23, 14], [10, 17], [23, 17]],
   arcade: [[11, 7], [17, 8], [8, 14], [21, 14], [24, 12]]
 }
 

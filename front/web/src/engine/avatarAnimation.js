@@ -13,6 +13,21 @@ export function directionFromDelta(dx, dy, fallback = 'down', epsilon = 0.02) {
     : (dy > 0 ? 'down' : 'up')
 }
 
+// Fast vehicles spend much more time on diagonal input than walking avatars.
+// A small directional hysteresis keeps the four-way sprite from flickering
+// between horizontal and vertical poses while the rider steers through a turn.
+export function rideDirectionFromDelta(dx, dy, fallback = 'down', bias = 1.22, epsilon = 0.02) {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) < epsilon) return fallback
+  const ax = Math.abs(dx)
+  const ay = Math.abs(dy)
+  const wasHorizontal = fallback === 'left' || fallback === 'right'
+  if (wasHorizontal && ay <= ax * bias) return dx < 0 ? 'left' : dx > 0 ? 'right' : fallback
+  if (!wasHorizontal && ax <= ay * bias) return dy < 0 ? 'up' : dy > 0 ? 'down' : fallback
+  return ax > ay
+    ? (dx > 0 ? 'right' : 'left')
+    : (dy > 0 ? 'down' : 'up')
+}
+
 export function createWalkState(x = 0, y = 0) {
   return { x, y, distance: 0, frame: 'idle' }
 }
@@ -62,6 +77,84 @@ export function sheetSource(direction = 'down', frame = 'idle') {
 
 const clamp01 = value => Math.max(0, Math.min(1, value))
 const easeOutCubic = value => 1 - Math.pow(1 - clamp01(value), 3)
+
+const RIDE_FORWARD = Object.freeze({
+  down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 }, up: { x: 0, y: -1 }
+})
+
+// Geometry for a mounted avatar is kept separate from drawing. In particular,
+// bicycle riders have a real hip/seat anchor and only render the sprite through
+// the waist; articulated legs are added by the world renderer at the pedals.
+export function rideLayout(kind = 'bicycle', direction = 'right') {
+  const dir = RIDE_FORWARD[direction] ? direction : 'right'
+  const forward = RIDE_FORWARD[dir]
+  const horizontal = forward.x !== 0
+  const side = horizontal ? forward.x : 0
+  const bicycle = kind === 'bicycle'
+
+  if (horizontal) {
+    const vehicleScale = bicycle ? 1.62 : 1.58
+    return {
+      kind: bicycle ? 'bicycle' : 'scooter',
+      direction: dir,
+      forward,
+      horizontal,
+      seated: bicycle,
+      vehicleScale,
+      cropRatio: bicycle ? 0.735 : 1,
+      bodyBottom: { x: side * (bicycle ? -6.5 : -1.5), y: bicycle ? -29.5 : -4 },
+      hip: { x: side * (bicycle ? -6.5 : -2), y: bicycle ? -31.5 : -21 },
+      shoulder: { x: side * (bicycle ? 1.5 : 1), y: bicycle ? -55 : -42 },
+      handles: bicycle
+        ? [{ x: side * 31, y: -40 }, { x: side * 27.5, y: -36.5 }]
+        : [{ x: side * 31, y: -48 }, { x: side * 27, y: -44 }],
+      lean: side * (bicycle ? 0.064 : 0.038)
+    }
+  }
+
+  // Front/back poses share a centred saddle, but the handle remains visibly
+  // ahead of the hips in the direction of travel. This makes direction changes
+  // legible instead of showing a horizontally squashed bicycle.
+  const ahead = forward.y
+  const vehicleScale = bicycle ? 1.62 : 1.58
+  return {
+    kind: bicycle ? 'bicycle' : 'scooter',
+    direction: dir,
+    forward,
+    horizontal,
+    seated: bicycle,
+    vehicleScale,
+    // Front/back sprites contain far more of the original straight legs than
+    // the profile view.  Cut at the waist so the articulated knees/pedals stay
+    // visible and the rider reads as seated instead of standing on the frame.
+    cropRatio: bicycle ? 0.62 : 1,
+    bodyBottom: { x: 0, y: bicycle ? -28.5 - ahead * 2.5 : -4 },
+    hip: { x: 0, y: bicycle ? -30 - ahead * 2.5 : -21 },
+    shoulder: { x: 0, y: bicycle ? -54 : -41 },
+    handles: bicycle
+      ? [{ x: -9.5, y: -38 + ahead * 7 }, { x: 9.5, y: -38 + ahead * 7 }]
+      : [{ x: -10.5, y: -47 + ahead * 8 }, { x: 10.5, y: -47 + ahead * 8 }],
+    lean: 0
+  }
+}
+
+export function sampleRideCycle(distance = 0, moving = false, kind = 'bicycle', reduceMotion = false) {
+  const travelled = Number.isFinite(distance) ? Math.max(0, distance) : 0
+  const bicycle = kind === 'bicycle'
+  const pedalPhase = reduceMotion ? Math.PI / 4 : travelled / (bicycle ? 38 : 44)
+  // Vehicle art is rendered at 1.62x/1.58x, so use the scaled wheel radius.
+  // Tying radians to travelled distance prevents the enlarged wheel from
+  // visibly spinning faster than the bicycle advances.
+  const wheelPhase = reduceMotion ? 0 : travelled / (bicycle ? 14.6 : 9.5)
+  const kick = reduceMotion || !moving ? 0 : (1 - Math.cos(pedalPhase * 2)) / 2
+  return {
+    pedalPhase,
+    wheelPhase,
+    kick,
+    // Travel-driven suspension stops on exactly the same frame as the vehicle.
+    bob: reduceMotion || !moving ? 0 : Math.sin(pedalPhase * 2) * (bicycle ? 0.65 : 0.38)
+  }
+}
 
 // Mount/dismount transitions stay code-driven so every avatar keeps the exact
 // same sprite identity and foot anchor. The returned transform is applied

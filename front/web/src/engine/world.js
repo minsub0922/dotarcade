@@ -1,5 +1,5 @@
 // DOTCADE — 캔버스 월드 엔진 (맵 렌더 · 이동 · 충돌 · 에이전트 · 말풍선)
-import { astar, randomWalkable } from './pathfind.js'
+import { astar } from './pathfind.js'
 import {
   NPC_GOALS,
   createAutonomyState,
@@ -21,29 +21,39 @@ import {
 } from './handheldVisuals.js'
 import { NpcReactionSystem } from './npcReactions.js'
 import {
-  AVATAR_FRAME, createWalkState, directionFromDelta, rideTransitionPose, sampleWalkFrame, sheetSource
+  AVATAR_FRAME, DISMOUNT_DURATION, createWalkState, directionFromDelta, rideDirectionFromDelta, rideLayout,
+  rideTransitionPose, sampleRideCycle, sampleWalkFrame, sheetSource
 } from './avatarAnimation.js'
 import { AvatarEmotionSystem } from './avatarEmotions.js'
+import {
+  dynamicAvoidTiles, layoutOccluders, navigationGridWithAvoid, occupiedEntityTiles, randomWalkableAvoiding
+} from './worldLayout.js'
 
 const T = 48
 const WORLD_W = 1440
 const WORLD_H = 960
 const PLAYER_WALK_SPEED = 4.4
+const AVATAR_VISUAL = Object.freeze({
+  player: { width: 54, height: 82 },
+  npc: { width: 52, height: 79 },
+  seated: { width: 48, height: 72 },
+  mounted: { width: 52, height: 82 }
+})
 const DIRS = ['down', 'left', 'right', 'up']
 const DIR_VECTOR = {
   down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 }, up: { x: 0, y: -1 }
 }
 const WORLD_OBJECTS = [
   POCKET_STATION,
-  { id: 'office-bike', map: 'office', kind: 'bicycle', label: '블루 자전거', tile: [21, 16], mountable: true, speed: 7.8, color: '#3f8fe5', dir: 'right' },
-  { id: 'office-scooter', map: 'office', kind: 'scooter', label: '퍼플 킥보드', tile: [25, 16], mountable: true, speed: 6.8, color: '#9a62e8', dir: 'left' },
+  { id: 'office-bike', map: 'office', kind: 'bicycle', label: '블루 자전거', tile: [21, 16], mountable: true, speed: 9.6, color: '#3f8fe5', dir: 'right' },
+  { id: 'office-scooter', map: 'office', kind: 'scooter', label: '퍼플 킥보드', tile: [25, 16], mountable: true, speed: 8.8, color: '#9a62e8', dir: 'left' },
   { id: 'office-book-a', map: 'office', kind: 'book', label: '게임 디자인 책', tile: [9, 11], throwable: true, color: '#7d6df2', dir: 'right' },
   { id: 'office-book-b', map: 'office', kind: 'book', label: '픽셀 아트 책', tile: [18, 16], throwable: true, color: '#ee6f91', dir: 'left' },
   { id: 'office-trash', map: 'office', kind: 'trashbin', label: '가벼운 쓰레기통', tile: [27, 6], throwable: true, color: '#8dd8e8', dir: 'right' },
-  { id: 'arcade-bike', map: 'arcade', kind: 'bicycle', label: '네온 자전거', tile: [22, 15], mountable: true, speed: 7.8, color: '#ff68c4', dir: 'left' },
-  { id: 'arcade-scooter', map: 'arcade', kind: 'scooter', label: '블루 킥보드', tile: [20, 15], mountable: true, speed: 6.8, color: '#69dcff', dir: 'right' },
+  { id: 'arcade-bike', map: 'arcade', kind: 'bicycle', label: '네온 자전거', tile: [21, 15], mountable: true, speed: 9.6, color: '#ff68c4', dir: 'left' },
+  { id: 'arcade-scooter', map: 'arcade', kind: 'scooter', label: '블루 킥보드', tile: [18, 15], mountable: true, speed: 8.8, color: '#69dcff', dir: 'right' },
   { id: 'arcade-book', map: 'arcade', kind: 'book', label: '공략 노트', tile: [17, 17], throwable: true, color: '#ffd35c', dir: 'right' },
-  { id: 'arcade-trash', map: 'arcade', kind: 'trashbin', label: '가벼운 쓰레기통', tile: [27, 17], throwable: true, color: '#a5b2c4', dir: 'left' }
+  { id: 'arcade-trash', map: 'arcade', kind: 'trashbin', label: '가벼운 쓰레기통', tile: [27, 18], throwable: true, color: '#a5b2c4', dir: 'left' }
 ]
 const ARCADE_ZONE = [8, 6, 24, 15]   // 손님이 배회하는 오락실 구역
 const ARCADE_LINES = [
@@ -80,6 +90,7 @@ export class Engine {
     this.images = {}       // idle/portrait images: id -> {down,left,right,up,face}
     this.walkSheets = {}   // 144x288 sheet: 3 gait columns x 4 canonical directions
     this.mapImg = {}
+    this.mapDepthEnabled = {}
     this.map = 'office'
     this.keys = new Set()
     this.player = this._ent('player', 'player', this.maps.office.spawn, 'down')
@@ -125,9 +136,11 @@ export class Engine {
     const img = src => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src })
     const imgWithFallback = async (primary, fallback) => (await img(primary)) || img(fallback)
     for (const m of ['office', 'arcade']) {
-      if (!this.mapImg[m]) jobs.push(
-        imgWithFallback(`/assets/map_${m}_v2.png`, `/assets/map_${m}.png`).then(i => { this.mapImg[m] = i })
-      )
+      if (!this.mapImg[m]) jobs.push((async () => {
+        const v2 = await img(`/assets/map_${m}_v2.png`)
+        this.mapDepthEnabled[m] = !!v2
+        this.mapImg[m] = v2 || await img(`/assets/map_${m}.png`)
+      })())
     }
     for (const id of spriteIds) {
       if (!this.images[id]) {
@@ -375,7 +388,7 @@ export class Engine {
         this.configureAutonomy(v.id, { profiles: ['visitor', v.strategy] })
         continue
       }
-      const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE) || this.maps.arcade.spawn
+      const spot = this._randomNpcTile(ARCADE_ZONE, 'arcade') || this.maps.arcade.spawn
       const e = this.addAgent(v.id, v.id, spot, {
         label: `${v.name}(${v.age})`, color: '#c9d1ff', map: 'arcade',
         autonomy: true, autonomyProfile: ['visitor', v.strategy], strategy: v.strategy
@@ -388,6 +401,26 @@ export class Engine {
   }
 
   grid() { return this.maps[this.map].collision }
+
+  _dynamicAvoid(mapName = this.map) {
+    return dynamicAvoidTiles(this.maps[mapName], this.worldObjects, mapName, T)
+  }
+
+  _npcGrid(mapName = this.map, keepTiles = []) {
+    return navigationGridWithAvoid(this.maps[mapName], this.worldObjects, mapName, T, keepTiles)
+  }
+
+  _randomNpcTile(zone, mapName = this.map) {
+    const map = this.maps[mapName]
+    const avoid = this._dynamicAvoid(mapName)
+    const occupied = occupiedEntityTiles(this.agents.values(), mapName, T)
+    for (const key of occupied) avoid.add(key)
+    if (mapName === this.map && this.player?.visible !== false) {
+      const playerOccupied = occupiedEntityTiles([{ ...this.player, map: mapName, visible: true }], mapName, T)
+      for (const key of playerOccupied) avoid.add(key)
+    }
+    return randomWalkableAvoiding(map.collision, zone, avoid)
+  }
 
   setMap(name, playerTile) {
     this.npcReactions.reset(this.agents)
@@ -522,8 +555,41 @@ export class Engine {
     const held = this.worldObject(this.heldObjectId)
     return {
       mounted: mounted ? { id: mounted.id, kind: mounted.kind, label: mounted.label, speed: mounted.speed } : null,
-      held: held ? { id: held.id, kind: held.kind, label: held.label } : null
+      held: held ? {
+        id: held.id,
+        kind: held.kind,
+        label: held.label,
+        actions: {
+          throw: { id: 'throw', key: 'F', enabled: !this.freezePlayer },
+          drop: { id: 'drop', key: 'E', enabled: !this.freezePlayer }
+        }
+      } : null
     }
+  }
+
+  nearbyRideableVehicle(maxDistance = T * 1.8) {
+    if (this.mountedVehicleId) return this.worldObject(this.mountedVehicleId)
+    return this.worldObjects
+      .filter(o => o.map === this.map && o.mountable && !o.held && !o.mounted && o.z < 8 && Math.hypot(o.vx, o.vy) < .8)
+      .map(o => ({ o, distance: Math.hypot(o.x - this.player.x, o.y - this.player.y) }))
+      .filter(({ distance }) => distance < maxDistance)
+      .sort((a, b) => a.distance - b.distance)[0]?.o || null
+  }
+
+  // Explicit action entry point for keyboard and touch UI. Pointer interaction
+  // deliberately never guesses that a tap means throw: the caller must name
+  // the action, which keeps pickup -> carry -> throw as three readable states.
+  performWorldAction(action, target = null) {
+    if (this.freezePlayer) return false
+    if (action === 'throw') return this.throwHeld(target)
+    if (action === 'drop') return this.dropHeld()
+    if (action === 'dismount') return this.dismountVehicle()
+    if (action === 'ride') {
+      if (this.mountedVehicleId) return this.dismountVehicle()
+      const vehicle = this.nearbyRideableVehicle()
+      return vehicle ? this.mountVehicle(vehicle.id) : false
+    }
+    return false
   }
 
   settleFreeRoam({ silent = true } = {}) {
@@ -543,16 +609,28 @@ export class Engine {
 
   mountVehicle(id) {
     const o = this.worldObject(id)
-    if (!o || !o.mountable || o.map !== this.map || o.mounted || o.held || this.freezePlayer) return false
+    if (!o || !o.mountable || o.map !== this.map || o.mounted || o.held || this.heldObjectId || this.freezePlayer) return false
     if (Math.hypot(o.x - this.player.x, o.y - this.player.y) > T * 1.8) return false
-    if (this.heldObjectId) this.dropHeld({ silent: true })
     if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
+    // Enter the parked vehicle in its visible orientation, then let movement
+    // steer it. Snapping every mount to the avatar's approach direction made
+    // the first seated frame look as if the bicycle rotated underneath them.
+    this.player.dir = DIR_VECTOR[o.dir] ? o.dir : this.player.dir
     o.mounted = true
     o.x = this.player.x; o.y = this.player.y; o.dir = this.player.dir
     this.mountedVehicleId = o.id
     this.player.speed = o.speed
     this.player.path = []
     this.player.meta.mounted = o.kind
+    this.player.meta.rideState = {
+      kind: o.kind,
+      vx: 0,
+      vy: 0,
+      cruise: 0,
+      distance: 0,
+      heading: null,
+      bank: 0
+    }
     this.player.meta.rideMotion = {
       phase: 'mount', kind: o.kind, vehicleId: o.id,
       startedAt: this.t, dir: this.player.dir
@@ -568,16 +646,28 @@ export class Engine {
     const o = this.worldObject(this.mountedVehicleId)
     if (!o) return false
     const side = this.player.dir === 'left' ? 1 : this.player.dir === 'right' ? -1 : 1
-    const candidate = { x: this.player.x + side * 24, y: this.player.y + 4 }
-    o.x = this._walkable(candidate.x, candidate.y) ? candidate.x : this.player.x
-    o.y = this._walkable(candidate.x, candidate.y) ? candidate.y : this.player.y
+    const candidates = [side * 34, -side * 34, 0].map(offset => ({ x: this.player.x + offset, y: this.player.y + 4 }))
+    const parked = candidates.find(candidate => this._vehicleWalkable(candidate.x, candidate.y, o.kind, this.player.dir)) || {
+      x: this.player.x, y: this.player.y
+    }
     o.dir = this.player.dir
     o.mounted = false
     this.mountedVehicleId = null
     this.player.speed = PLAYER_WALK_SPEED
     delete this.player.meta.mounted
-    if (silent || this.reduceMotion) delete this.player.meta.rideMotion
+    delete this.player.meta.rideState
+    if (silent || this.reduceMotion) {
+      o.x = parked.x; o.y = parked.y
+      delete o.parkMotion
+      delete this.player.meta.rideMotion
+    }
     else {
+      o.parkMotion = {
+        fromX: this.player.x, fromY: this.player.y,
+        toX: parked.x, toY: parked.y,
+        startedAt: this.t, duration: DISMOUNT_DURATION
+      }
+      o.x = this.player.x; o.y = this.player.y
       this.player.meta.rideMotion = {
         phase: 'dismount', kind: o.kind, vehicleId: o.id,
         startedAt: this.t, dir: this.player.dir
@@ -591,10 +681,9 @@ export class Engine {
 
   pickupObject(id) {
     const o = this.worldObject(id)
-    if (!o || !o.throwable || o.map !== this.map || o.held || o.mounted || this.freezePlayer) return false
+    if (!o || !o.throwable || o.map !== this.map || o.held || o.mounted || this.heldObjectId || this.freezePlayer) return false
     if (Math.hypot(o.x - this.player.x, o.y - this.player.y) > T * 1.65) return false
     if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
-    if (this.heldObjectId) this.dropHeld({ silent: true })
     o.held = true
     o.vx = 0; o.vy = 0; o.vz = 0; o.z = 42; o.bounces = 0
     this.heldObjectId = o.id
@@ -649,12 +738,18 @@ export class Engine {
     return true
   }
 
-  // 모바일: 가까운 소품을 직접 탭해 상호작용하고, 든 소품은 탭 방향으로 던진다.
-  interactAtPoint(px, py) {
+  // 모바일/마우스: 첫 탭은 소품을 집기만 한다. 들고 있을 때의 일반 탭은
+  // 이동을 계속하도록 false를 돌려주고, 명시적 터치 액션만 투척/내려놓기로 해석한다.
+  interactAtPoint(px, py, options = {}) {
     if (this.freezePlayer) return false
+    const heldAction = options?.heldAction || null
     const world = this.screenToWorld(px, py)
     const playerDistance = Math.hypot(world.x - this.player.x, world.y - this.player.y)
-    if (this.heldObjectId) return playerDistance < 48 ? this.dropHeld() : this.throwHeld(world)
+    if (this.heldObjectId) {
+      if (heldAction === 'throw') return this.performWorldAction('throw', world)
+      if (heldAction === 'drop') return this.performWorldAction('drop')
+      return false
+    }
     if (this.mountedVehicleId && playerDistance < 45) return this.dismountVehicle()
     // The station is tall, so its visible device sits well above its floor
     // anchor. Give the full silhouette a generous tap target on touch screens.
@@ -666,7 +761,11 @@ export class Engine {
     const hit = this.worldObjects
       .filter(o => o.map === this.map && !o.held && !o.mounted && o.z < 8)
       .map(o => ({ o, d: Math.hypot(world.x - o.x, world.y - o.y) }))
-      .filter(({ o, d }) => d < (isPocketStation(o) ? 42 : o.mountable ? 38 : 30))
+      .filter(({ o, d }) => d < (
+        isPocketStation(o) ? 42
+          : o.kind === 'bicycle' ? 52
+            : o.kind === 'scooter' ? 40 : 30
+      ))
       .sort((a, b) => a.d - b.d)[0]?.o
     if (!hit || Math.hypot(hit.x - this.player.x, hit.y - this.player.y) > T * 1.8) return false
     if (isPocketStation(hit)) {
@@ -696,11 +795,28 @@ export class Engine {
   // ---------- update ----------
   _walkable(px, py) {
     const g = this.grid()
-    for (const [ox, oy] of [[-9, -2], [9, -2], [-9, 8], [9, 8]]) {
+    // Sprite manifests anchor collision to the eight pixels immediately above
+    // the feet. Matching that footprint keeps keyboard and smoothed NPC motion
+    // on the same cells selected by A*, instead of colliding one row early.
+    for (const [ox, oy] of [[-11, -11], [11, -11], [-11, -2], [11, -2]]) {
       const tx = Math.floor((px + ox) / T), ty = Math.floor((py + oy) / T)
       if (!g[ty] || g[ty][tx] !== '.') return false
     }
     return true
+  }
+
+  _vehicleWalkable(px, py, kind = 'bicycle', dir = 'right') {
+    const grid = this.grid()
+    const horizontal = dir === 'left' || dir === 'right'
+    const long = kind === 'bicycle' ? 46 : 33
+    const short = kind === 'bicycle' ? 16 : 11
+    const xs = horizontal ? [-long, 0, long] : [-short, 0, short]
+    const ys = horizontal ? [-short, -2, short - 2] : [-long, 0, long]
+    return xs.flatMap(x => ys.map(y => [x, y])).every(([ox, oy]) => {
+      const tx = Math.floor((px + ox) / T)
+      const ty = Math.floor((py + oy) / T)
+      return grid[ty]?.[tx] === '.'
+    })
   }
 
   _propWalkable(px, py) {
@@ -716,6 +832,15 @@ export class Engine {
 
   _updateWorldObjects(dt) {
     const f = dt / 16.67
+    for (const object of this.worldObjects) {
+      const motion = object.parkMotion
+      if (!motion) continue
+      const progress = Math.max(0, Math.min(1, (this.t - motion.startedAt) / Math.max(1, motion.duration)))
+      const eased = 1 - Math.pow(1 - progress, 3)
+      object.x = motion.fromX + (motion.toX - motion.fromX) * eased
+      object.y = motion.fromY + (motion.toY - motion.fromY) * eased
+      if (progress >= 1) delete object.parkMotion
+    }
     const mounted = this.worldObject(this.mountedVehicleId)
     if (mounted) {
       mounted.x = this.player.x; mounted.y = this.player.y; mounted.dir = this.player.dir
@@ -874,7 +999,7 @@ export class Engine {
     const tx = Math.floor(target.x / T), ty = Math.floor(target.y / T)
     const from = [Math.floor(fromEntity.x / T), Math.floor(fromEntity.y / T)]
     return [[tx - 1, ty], [tx + 1, ty], [tx, ty + 1], [tx, ty - 1]]
-      .filter(([x, y]) => this.grid()[y]?.[x] === '.')
+      .filter(([x, y]) => this._npcGrid()[y]?.[x] === '.')
       .sort((a, b) => (Math.abs(a[0] - from[0]) + Math.abs(a[1] - from[1])) - (Math.abs(b[0] - from[0]) + Math.abs(b[1] - from[1])))[0] || [tx, ty]
   }
 
@@ -934,7 +1059,7 @@ export class Engine {
       if (distanceHome > 1) candidates.push({ kind: NPC_GOALS.RETURN_HOME, targetTile: home, face: e.home.face, opportunity: distanceHome > 7 ? .25 : 0 })
       candidates.push({ kind: NPC_GOALS.WORK, targetTile: home, face: e.home.face, durationMs: 3600 + Math.random() * 2400, opportunity: e.sitting ? .12 : 0 })
       candidates.push({ kind: NPC_GOALS.PORTABLE_PLAY, durationMs: 4200 + Math.random() * 4500, data: { venue: 'handheld' }, opportunity: e.sitting ? -.08 : .06 })
-      const roam = randomWalkable(this.grid(), this.maps.office.wander)
+      const roam = this._randomNpcTile(this.maps.office.wander, 'office')
       if (roam) candidates.push({ kind: NPC_GOALS.WANDER, targetTile: roam })
     } else if (this.map === 'arcade') {
       const cabs = this.maps.arcade.cabinets
@@ -954,7 +1079,7 @@ export class Engine {
         opportunity: this.cabinetLabels[cab.id] ? .13 : 0
       })
       candidates.push({ kind: NPC_GOALS.PORTABLE_PLAY, durationMs: 3800 + Math.random() * 4200, data: { venue: 'handheld' } })
-      const roam = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE)
+      const roam = this._randomNpcTile(ARCADE_ZONE, 'arcade')
       if (roam) candidates.push({ kind: NPC_GOALS.WANDER, targetTile: roam, opportunity: .05 })
     }
     candidates.push({ kind: NPC_GOALS.IDLE, durationMs: 800 + Math.random() * 1800 })
@@ -984,9 +1109,10 @@ export class Engine {
     if (!target) return 'failed'
     const targetX = target[0] * T + T / 2, targetY = target[1] * T + T - 6
     if (Math.hypot(e.x - targetX, e.y - targetY) <= a.arrivalRadius + 3) return 'arrived'
-    const raw = astar(this.grid(), from, target)
+    const navigationGrid = this._npcGrid(this.map, [target])
+    const raw = astar(navigationGrid, from, target)
     if (!raw?.length) return 'failed'
-    const route = smoothTilePath(this.grid(), from, raw, 6)
+    const route = smoothTilePath(navigationGrid, from, raw, 6)
     if (!route.length) return 'failed'
     e.sitting = false
     e.path = route
@@ -1321,6 +1447,65 @@ export class Engine {
     e.moving = Math.hypot(e.x - beforeX, e.y - beforeY) > 0.02
   }
 
+  _recordRideTravel(p, beforeX, beforeY, dt) {
+    const state = p.meta?.rideState
+    if (!state) return
+    const dx = p.x - beforeX
+    const dy = p.y - beforeY
+    const travelled = Math.hypot(dx, dy)
+    if (travelled <= .02) {
+      state.bank += (0 - state.bank) * (1 - Math.exp(-dt / 85))
+      return
+    }
+    state.distance += travelled
+    const heading = Math.atan2(dy, dx)
+    if (Number.isFinite(state.heading)) {
+      const delta = Math.atan2(Math.sin(heading - state.heading), Math.cos(heading - state.heading))
+      const targetBank = Math.max(-.085, Math.min(.085, delta * .09))
+      state.bank += (targetBank - state.bank) * (1 - Math.exp(-dt / 70))
+    }
+    state.heading = heading
+  }
+
+  _moveMountedWithKeys(p, keyX, keyY, f, dt) {
+    const state = p.meta?.rideState
+    if (!state) return false
+    let dx = keyX
+    let dy = keyY
+    const hasInput = !!(dx || dy)
+    if (hasInput) {
+      const length = Math.hypot(dx, dy)
+      dx /= length; dy /= length
+    }
+    // Accelerating over a few frames removes the instant 0 -> 9.6px jump,
+    // while a shorter braking response keeps office steering controllable.
+    const response = hasInput ? (state.kind === 'bicycle' ? 145 : 118) : 82
+    const blend = 1 - Math.exp(-dt / response)
+    const targetX = hasInput ? dx * p.speed : 0
+    const targetY = hasInput ? dy * p.speed : 0
+    state.vx += (targetX - state.vx) * blend
+    state.vy += (targetY - state.vy) * blend
+    if (!hasInput && Math.hypot(state.vx, state.vy) < .08) state.vx = state.vy = 0
+
+    const beforeX = p.x
+    const beforeY = p.y
+    const nx = p.x + state.vx * f
+    const ny = p.y + state.vy * f
+    const nextDir = rideDirectionFromDelta(state.vx, state.vy, p.dir)
+    const canMove = (x, y) => this._vehicleWalkable(x, y, state.kind, nextDir)
+    if (canMove(nx, p.y)) p.x = nx
+    else state.vx = 0
+    if (canMove(p.x, ny)) p.y = ny
+    else state.vy = 0
+
+    const movedX = p.x - beforeX
+    const movedY = p.y - beforeY
+    p.dir = rideDirectionFromDelta(movedX, movedY, p.dir)
+    p.moving = Math.hypot(movedX, movedY) > .02
+    this._recordRideTravel(p, beforeX, beforeY, dt)
+    return p.moving
+  }
+
   update(dt) {
     const f = dt / 16.67
     // --- player ---
@@ -1333,18 +1518,56 @@ export class Engine {
       const gx = tx * T + T / 2, gy = ty * T + T - 6
       const ddx = gx - p.x, ddy = gy - p.y
       const dist = Math.hypot(ddx, ddy)
-      if (dist < p.speed * f + 1) {
-        p.x = gx; p.y = gy; p.path.shift()
-        p.dir = directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
-        if (!p.path.length) { p.moving = false; const cb = p.cb; p.cb = null; cb && cb() }
+      const rideState = p.meta?.rideState
+      if (rideState) {
+        const blend = 1 - Math.exp(-dt / (rideState.kind === 'bicycle' ? 145 : 118))
+        rideState.cruise += (p.speed - rideState.cruise) * blend
+      }
+      const travelSpeed = rideState ? Math.max(1.1, rideState.cruise) : p.speed
+      if (dist < travelSpeed * f + 1) {
+        const arrivalDir = rideState ? rideDirectionFromDelta(gx - p.x, gy - p.y, p.dir) : p.dir
+        if (rideState && !this._vehicleWalkable(gx, gy, rideState.kind, arrivalDir)) {
+          p.path = []; p.moving = false; p.cb = null
+          rideState.cruise = 0; rideState.vx = 0; rideState.vy = 0
+          if (this.moveMarker?.valid) { this.moveMarker.valid = false; this.moveMarker.until = this.t + 520 }
+        } else {
+          p.x = gx; p.y = gy; p.path.shift()
+          p.dir = rideState
+            ? arrivalDir
+            : directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
+        }
+        this._recordRideTravel(p, beforeX, beforeY, dt)
+        if (!p.path.length) {
+          p.moving = false
+          if (rideState) { rideState.cruise = 0; rideState.vx = 0; rideState.vy = 0 }
+          const cb = p.cb; p.cb = null; cb && cb()
+        }
       } else {
-        p.x += (ddx / dist) * p.speed * f; p.y += (ddy / dist) * p.speed * f
-        p.dir = directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
-        p.moving = true
+        const nextX = p.x + (ddx / dist) * travelSpeed * f
+        const nextY = p.y + (ddy / dist) * travelSpeed * f
+        const nextDir = rideState ? rideDirectionFromDelta(nextX - p.x, nextY - p.y, p.dir) : p.dir
+        if (rideState && !this._vehicleWalkable(nextX, nextY, rideState.kind, nextDir)) {
+          p.path = []; p.moving = false; p.cb = null
+          rideState.cruise = 0; rideState.vx = 0; rideState.vy = 0
+          if (this.moveMarker?.valid) { this.moveMarker.valid = false; this.moveMarker.until = this.t + 520 }
+        } else {
+          p.x = nextX; p.y = nextY
+          p.dir = rideState
+            ? nextDir
+            : directionFromDelta(p.x - beforeX, p.y - beforeY, p.dir)
+          p.moving = true
+        }
+        this._recordRideTravel(p, beforeX, beforeY, dt)
       }
     } else if (!this.freezePlayer) {
       let dx = keyX, dy = keyY
-      if (dx || dy) {
+      if (p.meta?.rideState) {
+        if (dx || dy) {
+          p.path = []
+          if (this.moveMarker?.valid && !this.moveMarker.reachedAt) this.moveMarker.until = Math.min(this.moveMarker.until, this.t + 240)
+        }
+        this._moveMountedWithKeys(p, dx, dy, f, dt)
+      } else if (dx || dy) {
         const beforeX = p.x, beforeY = p.y
         p.path = []
         if (this.moveMarker?.valid && !this.moveMarker.reachedAt) this.moveMarker.until = Math.min(this.moveMarker.until, this.t + 240)
@@ -1382,7 +1605,7 @@ export class Engine {
         if (e.idleT <= 0) {
           e.idleT = 14000 + Math.random() * 30000
           if (e.sitting && Math.random() < 0.3) {
-            const spot = randomWalkable(this.grid(), this.maps.office.wander)
+            const spot = this._randomNpcTile(this.maps.office.wander, 'office')
             if (spot) this.goTo(e.id, spot, () => {
               setTimeout(() => {
                 if (!this.meetingMode && e.home) this.goTo(e.id, e.home.desk, () => this.sit(e.id, e.home.desk, e.home.face))
@@ -1394,7 +1617,7 @@ export class Engine {
         e.idleT -= dt
         if (e.idleT <= 0) {
           e.idleT = 8000 + Math.random() * 16000
-          const spot = randomWalkable(this.maps.arcade.collision, ARCADE_ZONE)
+          const spot = this._randomNpcTile(ARCADE_ZONE, 'arcade')
           if (spot) this.goTo(e.id, spot)
         }
       }
@@ -1503,24 +1726,28 @@ export class Engine {
 
   _computeHint() {
     let hint = null
+    let rideAction = null
     const p = this.player
     const ptx = Math.floor(p.x / T), pty = Math.floor(p.y / T)
     if (!this.freezePlayer) {
       const held = this.worldObject(this.heldObjectId)
       const mounted = this.worldObject(this.mountedVehicleId)
       if (held) {
-        hint = { type: 'heldProp', id: held.id, key: 'F', label: `${held.label} 던지기 · E 내려놓기` }
+        hint = { type: 'heldProp', id: held.id, objectLabel: held.label, key: 'F', label: `${held.label} 들고 있음 · F 던지기 · E 내려놓기` }
       } else if (mounted) {
-        hint = { type: 'vehicleMounted', id: mounted.id, key: 'E', label: `${mounted.label}에서 내리기 · 속도 ${mounted.speed.toFixed(1)}` }
+        rideAction = { type: 'vehicleMounted', id: mounted.id, key: 'R', label: `${mounted.label}에서 내리기`, detail: `이동 속도 ${mounted.speed.toFixed(1)}` }
       } else {
+        const nearbyVehicle = this.nearbyRideableVehicle(T * 1.55)
+        if (nearbyVehicle) {
+          rideAction = { type: 'vehicle', id: nearbyVehicle.id, key: 'R', label: `${nearbyVehicle.label} 타기`, detail: '이동 속도 UP' }
+        }
         const nearby = this.worldObjects
-          .filter(o => o.map === this.map && !o.held && !o.mounted && o.z < 8 && Math.hypot(o.vx, o.vy) < .8)
+          .filter(o => o.map === this.map && !o.mountable && !o.held && !o.mounted && o.z < 8 && Math.hypot(o.vx, o.vy) < .8)
           .map(o => ({ o, d: Math.hypot(o.x - p.x, o.y - p.y) }))
           .filter(({ d }) => d < T * 1.55)
           .sort((a, b) => a.d - b.d)[0]?.o
         if (isPocketStation(nearby)) hint = { type: 'handheld', id: nearby.id, key: 'E', label: 'DOTCADE POCKET · 게임팩 플레이' }
-        else if (nearby?.mountable) hint = { type: 'vehicle', id: nearby.id, key: 'E', label: `${nearby.label} 타기 · 이동 속도 UP` }
-        else if (nearby?.throwable) hint = { type: 'prop', id: nearby.id, key: 'E', label: `${nearby.label} 줍기 · F로 던지기` }
+        else if (nearby?.throwable) hint = { type: 'prop', id: nearby.id, key: 'E', label: `${nearby.label} 집기 · 든 뒤 F로 던지기` }
       }
     }
     if (!hint && this.map === 'office') {
@@ -1565,10 +1792,17 @@ export class Engine {
         }
       }
     }
-    this.currentHint = hint
-    this.interactionTarget = this._resolveInteractionTarget(hint)
-    const key = hint ? hint.type + (hint.id || '') + (hint.key || 'E') : ''
-    if (key !== this._hintKey) { this._hintKey = key; this.onHint(hint) }
+    // Riding is deliberately a separate R action. When a teammate and a
+    // vehicle are both close, E continues to target the teammate while the UI
+    // can render the ride action in its own non-overlapping chip.
+    const emittedHint = hint
+      ? (rideAction ? { ...hint, rideAction } : hint)
+      : rideAction
+    this.currentHint = emittedHint
+    this.interactionTarget = this._resolveInteractionTarget(hint || rideAction)
+    const rideKey = emittedHint?.rideAction ? `|${emittedHint.rideAction.type}${emittedHint.rideAction.id || ''}R` : ''
+    const key = emittedHint ? emittedHint.type + (emittedHint.id || '') + (emittedHint.key || 'E') + rideKey : ''
+    if (key !== this._hintKey) { this._hintKey = key; this.onHint(emittedHint) }
   }
 
   _resolveInteractionTarget(hint) {
@@ -1577,19 +1811,23 @@ export class Engine {
       const o = this.worldObject(hint.id)
       return o ? {
         type: hint.type, id: o.id, key: hint.key || 'E', x: o.x, y: o.y,
-        rx: o.mountable ? 28 : 20, ry: o.mountable ? 10 : 7,
+        rx: o.kind === 'bicycle' ? 48 : o.kind === 'scooter' ? 34 : 20,
+        ry: o.kind === 'bicycle' ? 20 : o.kind === 'scooter' ? 13 : 7,
         lift: o.kind === 'bicycle' ? 48 : o.kind === 'scooter' ? 45 : o.kind === 'trashbin' ? 42 : 28
       } : null
     }
     if (['vehicleMounted', 'heldProp'].includes(hint.type)) {
+      const vehicle = hint.type === 'vehicleMounted' ? this.worldObject(hint.id) : null
       return {
         type: hint.type, id: hint.id, key: hint.key || 'E', x: this.player.x, y: this.player.y,
-        rx: 24, ry: 8, lift: hint.type === 'heldProp' ? 102 : 90
+        rx: vehicle?.kind === 'bicycle' ? 48 : vehicle?.kind === 'scooter' ? 34 : 24,
+        ry: vehicle?.kind === 'bicycle' ? 20 : vehicle?.kind === 'scooter' ? 13 : 8,
+        lift: hint.type === 'heldProp' ? 102 : 112
       }
     }
     if (hint.type === 'agent') {
       const e = this.agents.get(hint.id)
-      return e ? { type: 'agent', id: e.id, key: 'E', x: e.x, y: e.y, rx: 23, ry: 9, lift: 78 } : null
+      return e ? { type: 'agent', id: e.id, key: 'E', x: e.x, y: e.y, rx: 25, ry: 10, lift: 88 } : null
     }
     if (hint.type === 'handheld' || hint.type === 'portable') {
       const station = this.worldObject(hint.id || POCKET_STATION.id)
@@ -1640,7 +1878,6 @@ export class Engine {
     this._drawAmbientBack()
 
     if (this.map === 'arcade') this._drawCabinetScreens()
-    if (this.map === 'office') this._drawShelfCartridges()
     this._drawMovementGuides()
     this._drawInteractionHalo()
     this._drawStepFx()
@@ -1653,16 +1890,34 @@ export class Engine {
       ...ents.map(e => ({ type: 'entity', y: e.y, value: e })),
       ...this.worldObjects
         .filter(o => o.map === this.map && !o.held && !o.mounted)
-        .map(o => ({ type: 'object', y: o.y, value: o }))
-    ].sort((a, b) => a.y - b.y)
+        .map(o => ({ type: 'object', y: o.y, value: o })),
+      ...(this.mapDepthEnabled[this.map] ? layoutOccluders(this.maps[this.map]) : [])
+        .map(o => ({ type: 'occluder', y: o.baseline, value: o }))
+    ].sort((a, b) => a.y - b.y || ({ entity: 0, object: 1, occluder: 2 }[a.type] - ({ entity: 0, object: 1, occluder: 2 }[b.type])))
     for (const item of scene) {
       if (item.type === 'entity') this._drawEnt(item.value)
-      else this._drawWorldObject(item.value)
+      else if (item.type === 'object') this._drawWorldObject(item.value)
+      else this._drawFurnitureOccluder(item.value, bg)
     }
     if (this.map === 'office') this._drawShelfSign()
+    for (const e of ents) this._drawEntOverlay(e)
     for (const e of ents) if (e.bubble) this._drawBubble(e)
     this._drawInteractionKey()
     ctx.restore()
+  }
+
+  _drawFurnitureOccluder(occluder, background) {
+    if (!background || !occluder?.source) return
+    const [x, y, width, height] = occluder.source
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return
+    // Repaint the measured foreground crop at its original coordinates. Since
+    // this item participates in the same foot-y scene sort as avatars, walking
+    // behind a sofa/desk hides the body while walking in front stays visible.
+    this.ctx.drawImage(background, x, y, width, height, x, y, width, height)
+    // Shelf cartridges are dynamic overlays, so they must share the shelf's
+    // baseline. Drawing them before the crop erased them; drawing them after
+    // the whole scene put them on top of avatars standing in front.
+    if (occluder.id === 'game-shelf-front') this._drawShelfCartridges()
   }
 
   _drawAmbientBack() {
@@ -1869,23 +2124,79 @@ export class Engine {
     }
   }
 
-  _drawVehicle(o, x, y, dir = 'right', riding = false) {
+  _drawVehicle(o, x, y, dir = 'right', riding = false, visual = null) {
     const { ctx } = this
-    const flip = dir === 'left' ? -1 : 1
-    const narrow = dir === 'up' || dir === 'down'
+    const horizontal = dir === 'left' || dir === 'right'
+    const forward = DIR_VECTOR[dir] || DIR_VECTOR.right
+    const moving = !!(riding && this.player.moving && !this.reduceMotion)
+    const cycle = visual?.cycle || sampleRideCycle(0, false, o.kind, this.reduceMotion)
+    const bank = Number(visual?.bank || 0)
+    const vehicleScale = o.kind === 'bicycle' ? 1.62 : 1.58
+
     ctx.save()
     ctx.translate(x, y)
-    ctx.scale(flip * (narrow ? .78 : 1), 1)
-    if (riding && this.player.moving && !this.reduceMotion) {
-      ctx.strokeStyle = `${o.color}aa`; ctx.lineWidth = 2
+    if (moving) {
+      ctx.strokeStyle = `${o.color}a6`; ctx.lineWidth = 2; ctx.lineCap = 'round'
       for (let i = 0; i < 3; i++) {
-        ctx.beginPath(); ctx.moveTo(-22 - i * 5, -3 + i * 4); ctx.lineTo(-37 - i * 8, -3 + i * 4); ctx.stroke()
+        const side = (i - 1) * 5
+        const sx = -forward.x * (23 * vehicleScale + i * 5) + (horizontal ? 0 : side)
+        const sy = -forward.y * (23 * vehicleScale + i * 5) + (horizontal ? side * .7 : 0)
+        ctx.beginPath(); ctx.moveTo(sx, sy)
+        ctx.lineTo(sx - forward.x * (14 + i * 4), sy - forward.y * (14 + i * 4)); ctx.stroke()
       }
     }
+
     ctx.fillStyle = 'rgba(16,15,25,.3)'
-    ctx.beginPath(); ctx.ellipse(0, 3, o.kind === 'bicycle' ? 27 : 23, 5, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath()
+    ctx.ellipse(
+      0, 3,
+      horizontal ? (o.kind === 'bicycle' ? 27 : 23) * vehicleScale : 8 * vehicleScale,
+      horizontal ? 5 * vehicleScale : (o.kind === 'bicycle' ? 28 : 23) * vehicleScale,
+      0, 0, Math.PI * 2
+    )
+    ctx.fill()
+    ctx.rotate(bank * .5)
+    ctx.scale(vehicleScale, vehicleScale)
+
+    if (!horizontal) {
+      const fy = forward.y
+      if (o.kind === 'bicycle') {
+        const rearY = -fy * 15
+        const frontY = fy * 17
+        for (const wy of [rearY, frontY]) {
+          ctx.strokeStyle = '#242a38'; ctx.lineWidth = 5
+          ctx.beginPath(); ctx.ellipse(0, wy, 5.3, 9.5, 0, 0, Math.PI * 2); ctx.stroke()
+          ctx.strokeStyle = '#d8f3f1'; ctx.lineWidth = 1.2
+          ctx.beginPath(); ctx.ellipse(0, wy, 3.6, 7.2, 0, 0, Math.PI * 2); ctx.stroke()
+          ctx.beginPath(); ctx.moveTo(-3.5, wy); ctx.lineTo(3.5, wy)
+          ctx.moveTo(0, wy - 6.5); ctx.lineTo(0, wy + 6.5); ctx.stroke()
+        }
+        ctx.strokeStyle = o.color; ctx.lineWidth = 4; ctx.lineJoin = 'round'
+        ctx.beginPath(); ctx.moveTo(0, rearY); ctx.lineTo(-5, -fy * 2); ctx.lineTo(0, frontY)
+        ctx.moveTo(0, rearY); ctx.lineTo(5, fy * 3); ctx.lineTo(0, frontY); ctx.stroke()
+        ctx.fillStyle = '#303344'
+        const saddleY = -18.5 - fy * 1.5
+        ctx.beginPath(); ctx.roundRect(-7, saddleY - 2, 14, 5, 2); ctx.fill()
+        ctx.strokeStyle = '#dce9ef'; ctx.lineWidth = 3
+        ctx.beginPath(); ctx.moveTo(0, frontY - fy * 4); ctx.lineTo(0, -24 + fy * 4)
+        ctx.moveTo(-8, -24 + fy * 4); ctx.lineTo(8, -24 + fy * 4); ctx.stroke()
+      } else {
+        for (const wy of [-fy * 14, fy * 15]) {
+          ctx.fillStyle = '#242a38'; ctx.beginPath(); ctx.ellipse(0, wy, 4.5, 7, 0, 0, Math.PI * 2); ctx.fill()
+          ctx.fillStyle = '#d8f3f1'; ctx.beginPath(); ctx.ellipse(0, wy, 1.8, 2.8, 0, 0, Math.PI * 2); ctx.fill()
+        }
+        ctx.fillStyle = o.color; ctx.beginPath(); ctx.roundRect(-6, -15, 12, 30, 5); ctx.fill()
+        ctx.fillStyle = 'rgba(255,255,255,.72)'; ctx.fillRect(-3, -10, 6, 18)
+        ctx.strokeStyle = o.color; ctx.lineWidth = 4
+        ctx.beginPath(); ctx.moveTo(0, fy * 13); ctx.lineTo(0, -28 + fy * 5); ctx.stroke()
+        ctx.fillStyle = '#303344'; ctx.fillRect(-9, -30 + fy * 5, 18, 4)
+      }
+      ctx.restore()
+      return
+    }
+
+    ctx.scale(dir === 'left' ? -1 : 1, 1)
     if (o.kind === 'bicycle') {
-      const wheelPhase = riding && this.player.moving && !this.reduceMotion ? this.t / 72 : 0
       for (const wx of [-17, 17]) {
         ctx.strokeStyle = '#242a38'; ctx.lineWidth = 5
         ctx.beginPath(); ctx.arc(wx, -1, 9, 0, Math.PI * 2); ctx.stroke()
@@ -1893,7 +2204,7 @@ export class Engine {
         ctx.beginPath(); ctx.arc(wx, -1, 7, 0, Math.PI * 2); ctx.stroke()
         ctx.strokeStyle = 'rgba(216,243,241,.62)'; ctx.lineWidth = 1
         for (let spoke = 0; spoke < 4; spoke++) {
-          const angle = wheelPhase + spoke * Math.PI / 2
+          const angle = cycle.wheelPhase + spoke * Math.PI / 2
           ctx.beginPath(); ctx.moveTo(wx, -1)
           ctx.lineTo(wx + Math.cos(angle) * 6.5, -1 + Math.sin(angle) * 6.5); ctx.stroke()
         }
@@ -1903,15 +2214,9 @@ export class Engine {
       ctx.fillStyle = '#303344'; ctx.fillRect(-10, -20, 12, 4)
       ctx.strokeStyle = '#dce9ef'; ctx.lineWidth = 3
       ctx.beginPath(); ctx.moveTo(11, -17); ctx.lineTo(15, -24); ctx.lineTo(21, -24); ctx.stroke()
-      if (riding) {
-        const pedal = this.player.moving && !this.reduceMotion ? this.t / 86 : 0
-        ctx.strokeStyle = '#242a38'; ctx.lineWidth = 2
-        ctx.beginPath(); ctx.arc(0, -3, 3.5, 0, Math.PI * 2); ctx.stroke()
-        ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(Math.cos(pedal) * 6, -3 + Math.sin(pedal) * 4); ctx.stroke()
-        ctx.fillStyle = o.color
-        ctx.fillRect(Math.cos(pedal) * 6 - 2, -5 + Math.sin(pedal) * 4, 5, 4)
-        ctx.fillRect(-Math.cos(pedal) * 6 - 2, -5 - Math.sin(pedal) * 4, 5, 4)
-      }
+      ctx.strokeStyle = '#242a38'; ctx.lineWidth = 2
+      ctx.beginPath(); ctx.arc(0, -3, 3.5, 0, Math.PI * 2); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(Math.cos(cycle.pedalPhase) * 6, -3 + Math.sin(cycle.pedalPhase) * 4); ctx.stroke()
     } else {
       for (const wx of [-14, 14]) {
         ctx.fillStyle = '#242a38'; ctx.beginPath(); ctx.arc(wx, 0, 6, 0, Math.PI * 2); ctx.fill()
@@ -1926,81 +2231,153 @@ export class Engine {
     ctx.restore()
   }
 
-  _drawRiderGrip(o, e, ridingLift, pose, rideLean = 0) {
+  _drawRiderDrive(o, e, layout, cycle, pose) {
     const { ctx } = this
-    const flip = e.dir === 'left' ? -1 : 1
-    const narrow = e.dir === 'up' || e.dir === 'down'
     const settle = e.meta?.rideMotion?.phase === 'mount' ? pose.liftMix : 1
-    if (settle < .32) return
-    const handleX = o.kind === 'bicycle' ? 18 : 13
-    const handleY = o.kind === 'bicycle' ? -24 : -29
-    const shoulderY = -31 - ridingLift * .28
+    if (settle < .16) return
+    const bank = Number(e.meta?.rideState?.bank || 0)
+    const limb = (hip, knee, foot, alpha = 1) => {
+      ctx.globalAlpha = Math.min(1, settle * 1.35) * alpha
+      ctx.strokeStyle = '#283859'; ctx.lineWidth = 4.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+      ctx.beginPath(); ctx.moveTo(hip.x, hip.y); ctx.lineTo(knee.x, knee.y); ctx.lineTo(foot.x, foot.y); ctx.stroke()
+      ctx.fillStyle = '#202838'
+      ctx.save(); ctx.translate(foot.x, foot.y); ctx.rotate(layout.horizontal ? layout.forward.x * .06 : 0)
+      ctx.beginPath(); ctx.roundRect(-4.5, -1.8, 9, 3.6, 1.5); ctx.fill(); ctx.restore()
+    }
 
     ctx.save()
-    ctx.translate(e.x + pose.offsetX, e.y + pose.hop)
-    ctx.rotate(pose.rotation + rideLean)
-    ctx.scale(flip * (narrow ? .78 : 1), 1)
-    ctx.globalAlpha = Math.min(1, settle * 1.35)
-    ctx.strokeStyle = '#233554'
-    ctx.lineWidth = 4
-    ctx.lineCap = 'round'
-    ctx.beginPath()
-    ctx.moveTo(1, shoulderY)
-    ctx.quadraticCurveTo(8, shoulderY + 4, handleX - 1, handleY)
-    ctx.stroke()
-    ctx.fillStyle = '#f2bd91'
-    ctx.beginPath(); ctx.arc(handleX, handleY, 2.4, 0, Math.PI * 2); ctx.fill()
-    if (narrow) {
-      ctx.beginPath(); ctx.arc(handleX - 7, handleY + 1, 2.2, 0, Math.PI * 2); ctx.fill()
+    ctx.translate(e.x + pose.offsetX, e.y + pose.hop + cycle.bob)
+    ctx.rotate(pose.rotation + bank * .5)
+    ctx.scale(pose.scaleX, pose.scaleY)
+    if (o.kind === 'bicycle') {
+      if (layout.horizontal) {
+        for (const side of [-1, 1]) {
+          const phase = cycle.pedalPhase + (side < 0 ? 0 : Math.PI)
+          const pedal = { x: layout.forward.x * Math.cos(phase) * 9.5, y: -4.8 + Math.sin(phase) * 6.3 }
+          const hip = { x: layout.hip.x - layout.forward.x * side * 2.2, y: layout.hip.y + side * .6 }
+          const knee = {
+            x: (hip.x + pedal.x) * .5 + layout.forward.x * (7 + Math.max(0, Math.sin(phase)) * 2.5),
+            y: -17 + Math.abs(Math.sin(phase)) * 2.8
+          }
+          limb(hip, knee, pedal, side < 0 ? .7 : 1)
+        }
+      } else {
+        for (const side of [-1, 1]) {
+          const phase = cycle.pedalPhase + (side < 0 ? 0 : Math.PI)
+          const pedal = { x: side * 5.5 + Math.cos(phase) * 2.5, y: -5 + Math.sin(phase) * 6 }
+          const hip = { x: side * 3.2, y: layout.hip.y }
+          // In the front/back silhouette a narrow knee angle reads as two
+          // straight legs and makes the avatar look as if it is standing on
+          // the bicycle. Flare each knee outside the frame, then bring the
+          // shoe back to the pedal so the seated bend remains visible.
+          const knee = {
+            x: side * (12.5 + Math.abs(Math.cos(phase)) * 2.5),
+            y: -18 + Math.abs(Math.sin(phase)) * 1.5
+          }
+          limb(hip, knee, pedal, side < 0 ? .72 : 1)
+        }
+      }
+    } else if (layout.horizontal) {
+      const side = layout.forward.x
+      limb(
+        { x: layout.hip.x - side * 2, y: layout.hip.y },
+        { x: -side * 2, y: -10 },
+        { x: -side * 3, y: -5 },
+        .76
+      )
+      const kickFoot = {
+        x: side * (5 - cycle.kick * 19),
+        y: -4 + Math.sin(cycle.kick * Math.PI) * 5.5
+      }
+      limb(
+        { x: layout.hip.x + side * 3.5, y: layout.hip.y },
+        { x: side * (6 + cycle.kick * 4), y: -11 },
+        kickFoot
+      )
+    } else {
+      limb({ x: -3.5, y: layout.hip.y }, { x: -5.5, y: -10 }, { x: -4, y: -4.5 }, .76)
+      limb(
+        { x: 3.5, y: layout.hip.y },
+        { x: 6 + cycle.kick * 3, y: -10 },
+        { x: 4 + cycle.kick * 6, y: -4 + Math.sin(cycle.kick * Math.PI) * 4.5 }
+      )
     }
     ctx.restore()
   }
 
-  _drawRiderDrive(o, e, ridingLift, pose) {
+  _drawMountedAvatar(e, img, layout, cycle, pose) {
+    if (!img?.width || !img?.height) return false
     const { ctx } = this
-    const flip = e.dir === 'left' ? -1 : 1
-    const narrow = e.dir === 'up' || e.dir === 'down'
     const settle = e.meta?.rideMotion?.phase === 'mount' ? pose.liftMix : 1
-    if (settle < .24) return
-    const moving = e.moving && !this.reduceMotion
+    const cropRatio = 1 - (1 - layout.cropRatio) * settle
+    const sourceH = Math.max(1, Math.round(img.height * cropRatio))
+    const scale = Math.min(AVATAR_VISUAL.mounted.height / img.height, AVATAR_VISUAL.mounted.width / img.width)
+    const drawW = Math.round(img.width * scale)
+    const drawH = Math.round(sourceH * scale)
+    const bottomX = layout.bodyBottom.x * settle
+    const bottomY = 4 + (layout.bodyBottom.y - 4) * settle
+    const bank = Number(e.meta?.rideState?.bank || 0)
 
     ctx.save()
-    ctx.translate(e.x + pose.offsetX, e.y + pose.hop)
-    ctx.rotate(pose.rotation)
-    ctx.scale(flip * (narrow ? .74 : 1), 1)
-    ctx.globalAlpha = Math.min(1, settle * 1.45)
-    ctx.strokeStyle = '#283859'
-    ctx.fillStyle = '#1f2a43'
-    ctx.lineCap = 'round'
+    ctx.translate(e.x + pose.offsetX + bottomX, e.y + pose.hop + bottomY + cycle.bob)
+    ctx.rotate(pose.rotation + layout.lean * settle + bank * .55)
+    ctx.scale(pose.scaleX, pose.scaleY)
+    ctx.drawImage(img, 0, 0, img.width, sourceH, -Math.round(drawW / 2), -drawH, drawW, drawH)
+    ctx.restore()
+    return { drawW, drawH: Math.round(img.height * scale), bob: cycle.bob }
+  }
 
-    if (o.kind === 'bicycle') {
-      const phase = moving ? this.t / 86 : Math.PI / 4
-      for (const side of [-1, 1]) {
-        const pedalX = Math.cos(phase + (side < 0 ? 0 : Math.PI)) * 6
-        const pedalY = -3 + Math.sin(phase + (side < 0 ? 0 : Math.PI)) * 4
-        const hipX = side * 3
-        const hipY = -18 - ridingLift * .18
-        const kneeX = hipX + pedalX * .38 + side * 2
-        const kneeY = -11 + Math.abs(Math.sin(phase + side)) * 2
-        ctx.lineWidth = 4.2
-        ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(kneeX, kneeY); ctx.lineTo(pedalX, pedalY); ctx.stroke()
-        ctx.save(); ctx.translate(pedalX, pedalY); ctx.rotate(Math.sin(phase + side) * .12)
-        ctx.fillStyle = '#252a35'; ctx.fillRect(-4, -1.7, 8, 3.4); ctx.restore()
+  _drawDismountAvatar(e, img, kind, pose) {
+    if (!img?.width || !img?.height || !pose?.active) return null
+    const { ctx } = this
+    const layout = rideLayout(kind, e.dir)
+    const progress = Math.max(0, Math.min(1, Number(pose.progress) || 0))
+    const mountedScale = Math.min(AVATAR_VISUAL.mounted.height / img.height, AVATAR_VISUAL.mounted.width / img.width)
+    const standingScale = Math.min(AVATAR_VISUAL.player.height / img.height, AVATAR_VISUAL.player.width / img.width)
+    const scale = mountedScale + (standingScale - mountedScale) * progress
+    const cropRatio = layout.cropRatio + (1 - layout.cropRatio) * progress
+    const sourceH = Math.max(1, Math.round(img.height * cropRatio))
+    const drawW = Math.round(img.width * scale)
+    const drawH = Math.round(sourceH * scale)
+    const bottomX = layout.bodyBottom.x * (1 - progress)
+    const bottomY = layout.bodyBottom.y * (1 - progress) + 4 * progress
+
+    ctx.save()
+    ctx.translate(e.x + pose.offsetX + bottomX, e.y + pose.hop + bottomY)
+    ctx.rotate(pose.rotation + layout.lean * (1 - progress))
+    ctx.scale(pose.scaleX, pose.scaleY)
+    ctx.drawImage(img, 0, 0, img.width, sourceH, -Math.round(drawW / 2), -drawH, drawW, drawH)
+    ctx.restore()
+    return { drawW, drawH: Math.round(img.height * scale), bob: pose.hop || 0 }
+  }
+
+  _drawRiderGrip(o, e, layout, cycle, pose) {
+    const { ctx } = this
+    const settle = e.meta?.rideMotion?.phase === 'mount' ? pose.liftMix : 1
+    if (settle < .26) return
+    const bank = Number(e.meta?.rideState?.bank || 0)
+    ctx.save()
+    ctx.translate(e.x + pose.offsetX, e.y + pose.hop + cycle.bob)
+    ctx.rotate(pose.rotation + bank * .5)
+    ctx.scale(pose.scaleX, pose.scaleY)
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+    for (let i = 0; i < layout.handles.length; i++) {
+      const handle = layout.handles[i]
+      const sideOffset = layout.horizontal ? layout.forward.x * (i ? -2 : 2) : (i ? 2 : -2)
+      const shoulder = { x: layout.shoulder.x + sideOffset, y: layout.shoulder.y + i * 1.8 }
+      const elbow = {
+        x: shoulder.x + (handle.x - shoulder.x) * .55 + (layout.horizontal ? 0 : sideOffset),
+        y: shoulder.y + (handle.y - shoulder.y) * .52 + 3
       }
-    } else {
-      const kick = moving ? (Math.sin(this.t / 105) + 1) / 2 : 0
-      // One foot stays on the deck while the other pushes backward and returns.
-      ctx.lineWidth = 4.4
-      ctx.beginPath(); ctx.moveTo(-3, -17); ctx.lineTo(-5, -9); ctx.lineTo(-1, -5); ctx.stroke()
-      ctx.fillStyle = '#252a35'; ctx.fillRect(-5, -7, 10, 3.5)
-      const kneeX = 4 + kick * 4
-      const footX = 5 - kick * 13
-      const footY = -3 + Math.sin(kick * Math.PI) * 4
-      ctx.strokeStyle = '#35486d'
-      ctx.beginPath(); ctx.moveTo(3, -17); ctx.lineTo(kneeX, -10); ctx.lineTo(footX, footY); ctx.stroke()
-      ctx.save(); ctx.translate(footX, footY); ctx.rotate(-kick * .18)
-      ctx.fillStyle = '#252a35'; ctx.fillRect(-3, -2, 9, 3.5); ctx.restore()
+      ctx.globalAlpha = Math.min(1, settle * 1.35) * (i ? 1 : .72)
+      ctx.strokeStyle = '#233554'; ctx.lineWidth = 4
+      ctx.beginPath(); ctx.moveTo(shoulder.x, shoulder.y); ctx.lineTo(elbow.x, elbow.y); ctx.lineTo(handle.x, handle.y); ctx.stroke()
+      ctx.fillStyle = '#f2bd91'; ctx.beginPath(); ctx.arc(handle.x, handle.y, 2.35, 0, Math.PI * 2); ctx.fill()
     }
+    ctx.globalAlpha = Math.min(1, settle * 1.35)
+    ctx.strokeStyle = '#242a38'; ctx.lineWidth = 2.2
+    const [a, b] = layout.handles
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
     ctx.restore()
   }
 
@@ -2021,6 +2398,13 @@ export class Engine {
     const { ctx } = this
     const a = this.interactionTarget
     if (!a) return
+    // Vehicle controls live in a dedicated DOM ride chip. Drawing another key
+    // badge over the vehicle caused it to collide with nearby NPC talk badges.
+    if (a.type === 'vehicle' || a.type === 'vehicleMounted') return
+    // The bottom action bar already exposes mounted/held controls. Let the
+    // short pickup/mount speech bubble read cleanly before showing the floating
+    // key prompt above the player again.
+    if (this.player.bubble && (a.type === 'vehicleMounted' || a.type === 'heldProp')) return
     const lift = a.type === 'agent' ? a.lift : Math.max(28, a.lift || 28)
     const y = a.y - lift + (this.reduceMotion ? 0 : Math.sin(this.t / 190) * 2)
     ctx.save()
@@ -2044,26 +2428,29 @@ export class Engine {
     const rideMotion = isPlayer ? e.meta?.rideMotion : null
     const ridePose = rideTransitionPose(rideMotion, this.t, this.reduceMotion)
     const rideKind = mounted?.kind || rideMotion?.kind || null
+    const dismounting = !mounted && rideMotion?.phase === 'dismount' && ridePose.active && !!rideKind
     const walkFrame = e.walkAnimation?.frame || 'idle'
-    const useRideSheet = !!(walkSheet && mounted && e.moving && !this.reduceMotion)
     const useWalkSheet = !!(walkSheet && e.moving && !e.sitting && !mounted && !this.reduceMotion)
-    const useMotionSheet = useWalkSheet || useRideSheet
+    const useMotionSheet = useWalkSheet
     const source = useMotionSheet ? sheetSource(e.dir, walkFrame) : null
     const sourceW = source?.width || img?.width
     const sourceH = source?.height || img?.height
-    const targetH = e.sitting ? 62 : (isPlayer ? (mounted ? (rideKind === 'bicycle' ? 66 : 72) : 76) : 70)
-    const targetW = 47
+    const visual = e.sitting ? AVATAR_VISUAL.seated : (isPlayer ? AVATAR_VISUAL.player : AVATAR_VISUAL.npc)
+    const targetH = visual.height
+    const targetW = visual.width
     const scale = sourceW && sourceH ? Math.min(targetH / sourceH, targetW / sourceW) : 1
     const drawW = sourceW ? Math.max(1, Math.round(sourceW * scale)) : 28
     const drawH = sourceH ? Math.max(1, Math.round(sourceH * scale)) : 48
     const frameStride = walkFrame === 'stepL' ? -1 : walkFrame === 'stepR' ? 1 : 0
-    const fallbackStride = !this.reduceMotion && e.moving ? Math.sin(this.t / 62 + e.x * .015) : 0
-    const stride = useMotionSheet ? frameStride : fallbackStride
+    const fallbackStride = !mounted && !this.reduceMotion && e.moving ? Math.sin(this.t / 62 + e.x * .015) : 0
+    const stride = mounted ? 0 : (useMotionSheet ? frameStride : fallbackStride)
     // The new contact frames carry the gait. Keep only a tiny pass-pose lift;
     // the previous 3px sine bob made every avatar look like it was skating.
     const bob = this.reduceMotion
       ? 0
-      : useMotionSheet
+      : mounted
+        ? 0
+        : useMotionSheet
         ? (walkFrame === 'idle' ? -0.65 : 0)
         : e.moving
           ? Math.abs(stride) * -2
@@ -2072,12 +2459,14 @@ export class Engine {
     const isTarget = this.interactionTarget?.type === 'agent' && this.interactionTarget.id === e.id
     const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 145) * 1.6
     const baseRideLift = rideKind === 'bicycle' ? 9 : rideKind === 'scooter' ? 3 : 0
-    const ridingLift = mounted
-      ? baseRideLift * (rideMotion?.phase === 'mount' ? ridePose.liftMix : 1)
-      : rideMotion?.phase === 'dismount' ? baseRideLift * ridePose.liftMix : 0
-    const rideLean = mounted && e.moving && (e.dir === 'left' || e.dir === 'right')
-      ? (e.dir === 'right' ? 1 : -1) * (rideKind === 'bicycle' ? .032 : .018)
-      : 0
+    const ridingLift = rideMotion?.phase === 'dismount' ? baseRideLift * ridePose.liftMix : 0
+    const mountedLayout = mounted ? rideLayout(mounted.kind, e.dir) : null
+    const mountedCycle = mounted
+      ? sampleRideCycle(e.meta?.rideState?.distance || 0, e.moving, mounted.kind, this.reduceMotion)
+      : null
+    const rideVisual = mounted
+      ? { cycle: mountedCycle, bank: e.meta?.rideState?.bank || 0 }
+      : null
     const reactionMotion = isPlayer
       ? { x: 0, y: 0, rotation: 0 }
       : this.npcReactions.visualOffset(e, this.t, this.reduceMotion)
@@ -2087,9 +2476,12 @@ export class Engine {
       ctx.strokeStyle = 'rgba(131,247,186,.96)'; ctx.lineWidth = 2.5
       ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 22 + pulse, 8 + pulse * .3, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
     }
-    // shadow
-    ctx.fillStyle = isPlayer ? 'rgba(20,15,36,.34)' : 'rgba(18,14,26,.27)'
-    ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, Math.max(10, drawW * (.36 - Math.abs(stride) * .035)), 4.6 - Math.abs(stride) * .4, 0, 0, Math.PI * 2); ctx.fill()
+    // Mounted vehicles own the ground shadow; drawing the standing avatar
+    // shadow as well made the wheels look embedded in a dark puddle.
+    if (!mounted) {
+      ctx.fillStyle = isPlayer ? 'rgba(20,15,36,.34)' : 'rgba(18,14,26,.27)'
+      ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, Math.max(10, drawW * (.36 - Math.abs(stride) * .035)), 4.6 - Math.abs(stride) * .4, 0, 0, Math.PI * 2); ctx.fill()
+    }
     if (isPlayer) {
       ctx.fillStyle = 'rgba(99,82,219,.12)'
       ctx.strokeStyle = 'rgba(255,255,255,.96)'; ctx.lineWidth = 3
@@ -2097,17 +2489,25 @@ export class Engine {
       ctx.strokeStyle = 'rgba(124,105,242,.95)'; ctx.lineWidth = 2
       ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 14.5, 5.3, 0, 0, Math.PI * 2); ctx.stroke()
     }
+    let mountedAvatar = null
     if (mounted) {
-      this._drawVehicle(mounted, e.x, e.y, e.dir, true)
-      this._drawRiderDrive(mounted, e, ridingLift, ridePose)
-    }
-    if (img || useMotionSheet) {
+      this._drawVehicle(mounted, e.x, e.y, e.dir, true, rideVisual)
+      this._drawRiderDrive(mounted, e, mountedLayout, mountedCycle, ridePose)
+      mountedAvatar = this._drawMountedAvatar(e, img, mountedLayout, mountedCycle, ridePose)
+      if (!mountedAvatar) {
+        ctx.fillStyle = e.color
+        ctx.fillRect(e.x - 11, e.y - 54, 22, 35)
+      }
+      this._drawRiderGrip(mounted, e, mountedLayout, mountedCycle, ridePose)
+    } else if (dismounting && img) {
+      mountedAvatar = this._drawDismountAvatar(e, img, rideKind, ridePose)
+    } else if (img || useMotionSheet) {
       ctx.save()
       ctx.translate(
         Math.round(e.x + reactionMotion.x + ridePose.offsetX),
         Math.round(e.y + reactionMotion.y + ridePose.hop)
       )
-      ctx.rotate(reactionMotion.rotation + ridePose.rotation + rideLean)
+      ctx.rotate(reactionMotion.rotation + ridePose.rotation)
       ctx.scale(
         (reactionMotion.scaleX ?? 1) * ridePose.scaleX,
         (reactionMotion.scaleY ?? 1) * ridePose.scaleY
@@ -2126,23 +2526,44 @@ export class Engine {
       ctx.fillStyle = e.color
       ctx.fillRect(e.x - 12 + reactionMotion.x, e.y - 40 - ridingLift + reactionMotion.y, 24, 40)
     }
-    if (mounted) this._drawRiderGrip(mounted, e, ridingLift, ridePose, rideLean)
-    drawAgentHandheld(ctx, e, {
-      drawW,
-      drawH,
-      bob,
-      time: this.t,
-      reduceMotion: this.reduceMotion,
-      visualOffset: reactionMotion
-    })
+    if (!mounted) {
+      drawAgentHandheld(ctx, e, {
+        drawW,
+        drawH,
+        bob,
+        time: this.t,
+        reduceMotion: this.reduceMotion,
+        visualOffset: reactionMotion
+      })
+    }
     if (held) this._drawWorldObject(held)
+    e._renderOverlay = {
+      drawW: mountedAvatar?.drawW || drawW,
+      drawH: mountedAvatar?.drawH || drawH + ridingLift,
+      bob: mountedCycle?.bob || bob
+    }
+  }
+
+  _drawEntOverlay(e) {
+    const { ctx } = this
+    const set = this.images[e.sprite]
+    const isPlayer = e === this.player
+    const mounted = isPlayer ? this.worldObject(this.mountedVehicleId) : null
+    const held = isPlayer ? this.worldObject(this.heldObjectId) : null
+    const metrics = e._renderOverlay || {
+      drawW: isPlayer ? AVATAR_VISUAL.player.width : AVATAR_VISUAL.npc.width,
+      drawH: e.sitting ? AVATAR_VISUAL.seated.height : (isPlayer ? AVATAR_VISUAL.player.height : AVATAR_VISUAL.npc.height),
+      bob: 0
+    }
+    const { drawW, drawH, bob } = metrics
+
     if (!isPlayer) this.npcReactions.draw(ctx, e, this.t, {
       spriteHeight: drawH,
       reduceMotion: this.reduceMotion,
       faceImage: set?.face || null
     })
     this.avatarEmotions.draw(ctx, e, this.t, {
-      spriteHeight: drawH + ridingLift,
+      spriteHeight: drawH,
       drawWidth: drawW,
       bob,
       reduceMotion: this.reduceMotion,
@@ -2190,7 +2611,11 @@ export class Engine {
   _drawBubble(e) {
     const { ctx } = this
     const set = this.images[e.sprite]
-    const h = e.sitting ? 62 : (e === this.player ? 72 : 68)
+    const mounted = e === this.player ? this.worldObject(this.mountedVehicleId) : null
+    const h = e.sitting
+      ? AVATAR_VISUAL.seated.height
+      : mounted ? (mounted.kind === 'bicycle' ? 94 : 84)
+        : (e === this.player ? AVATAR_VISUAL.player.height : AVATAR_VISUAL.npc.height)
     let text = e.bubble.text
     if (text.length > 64) text = text.slice(0, 63) + '…'
     ctx.font = '15px "Segoe UI", "Apple SD Gothic Neo", sans-serif'
