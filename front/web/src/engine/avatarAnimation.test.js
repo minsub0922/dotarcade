@@ -85,8 +85,20 @@ test('teleports and paused actors never fast-forward the gait', () => {
   const state = createWalkState(0, 0)
   assert.equal(sampleWalkFrame(state, { x: 500, y: 500, moving: true }), 'idle')
   assert.equal(state.distance, 0)
+  assert.equal(state.advanced, false)
+  assert.equal(state.teleported, true)
   assert.equal(sampleWalkFrame(state, { x: 510, y: 500, moving: true, paused: true }), 'idle')
   assert.equal(state.distance, 0)
+  assert.equal(state.advanced, false)
+  assert.equal(state.teleported, false)
+})
+
+test('blocked actors return to idle instead of freezing on the previous step', () => {
+  const state = createWalkState(0, 0)
+  assert.equal(sampleWalkFrame(state, { x: 22, y: 0, speed: 3, moving: true }), 'stepL')
+  assert.equal(state.advanced, true)
+  assert.equal(sampleWalkFrame(state, { x: 22, y: 0, speed: 3, moving: true }), 'idle')
+  assert.equal(state.advanced, false)
 })
 
 test('sheet cells use canonical down-left-right-up rows', () => {

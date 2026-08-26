@@ -71,6 +71,7 @@ export function drawAgentHandheld(ctx, entity, {
     Math.round(entity.y + (motion.y || 0))
   )
   ctx.rotate(motion.rotation || 0)
+  ctx.transform(1, 0, motion.shearX || 0, 1, 0, 0)
   ctx.scale(motion.scaleX ?? 1, motion.scaleY ?? 1)
   ctx.translate(Math.round(x), Math.round(y))
   ctx.rotate(side * .07)

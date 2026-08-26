@@ -149,7 +149,8 @@ export default function App() {
       simRef.current = new ArcadeSim(eng)
       window.__dotcade = { eng, meet: meetRef.current, sim: simRef.current, store: useStore } // 디버그/E2E용
 
-      await eng.load(['player', ...TEAM.map(t => t.id), ...VISITORS.map(v => v.id)])
+      const avatarSpriteIds = [PLAYER, ...TEAM, ...VISITORS].map(avatar => avatar.sprite || avatar.id)
+      await eng.load([...new Set(avatarSpriteIds)])
       eng.player.label = `${PLAYER.name} (팀장)`
 
       // 오피스 팀 배치

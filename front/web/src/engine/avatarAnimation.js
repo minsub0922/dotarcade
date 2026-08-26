@@ -35,7 +35,7 @@ export function rideDirectionFromDelta(dx, dy, fallback = 'down', bias = 1.22, e
 }
 
 export function createWalkState(x = 0, y = 0) {
-  return { x, y, distance: 0, frame: 'idle' }
+  return { x, y, distance: 0, frame: 'idle', advanced: false, teleported: false }
 }
 
 // Drive the gait from travelled distance rather than wall-clock time. Feet stop
@@ -52,12 +52,16 @@ export function sampleWalkFrame(state, {
   const dx = Number.isFinite(x) ? x - state.x : 0
   const dy = Number.isFinite(y) ? y - state.y : 0
   const travelled = Math.hypot(dx, dy)
+  const teleported = travelled >= teleportThreshold
+  const advanced = !!(moving && !paused && travelled > 0.01 && travelled < teleportThreshold)
 
-  if (moving && !paused && travelled > 0.01 && travelled < teleportThreshold) state.distance += travelled
+  if (advanced) state.distance += travelled
   state.x = Number.isFinite(x) ? x : state.x
   state.y = Number.isFinite(y) ? y : state.y
+  state.advanced = advanced
+  state.teleported = teleported
 
-  if (!moving || paused) {
+  if (!advanced) {
     state.frame = 'idle'
     return state.frame
   }

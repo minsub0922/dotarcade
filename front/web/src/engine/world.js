@@ -25,6 +25,9 @@ import {
   isWalkSheetCompatible, rideDirectionFromDelta, rideLayout, rideTransitionPose, sampleRideCycle,
   sampleWalkFrame, sheetSource
 } from './avatarAnimation.js'
+import {
+  NEUTRAL_AVATAR_WALK_POSE, createAvatarWalkMotionState, sampleAvatarWalkMotion
+} from './avatarWalkMotion.js'
 import { AvatarEmotionSystem } from './avatarEmotions.js'
 import {
   dynamicAvoidTiles, layoutOccluders, navigationGridWithAvoid, occupiedEntityTiles, randomWalkableAvoiding
@@ -169,6 +172,7 @@ export class Engine {
       path: [], speed: 3.0, moving: false, sitting: false,
       stepAt: 0, stepSide: 0,
       walkAnimation: createWalkState(x, y),
+      walkMotion: createAvatarWalkMotionState(),
       bubble: null, cb: null, state: 'idle', idleT: 2000 + Math.random() * 4000,
       label: '', color: '#fff', visible: true, home: null, meta: {}, autonomy: null
     }
@@ -1651,9 +1655,9 @@ export class Engine {
       })
     }
 
-    this._sampleAvatarWalk(p)
+    this._sampleAvatarWalk(p, dt)
     for (const e of this.agents.values()) {
-      if (e.visible && (!e.map || e.map === this.map)) this._sampleAvatarWalk(e)
+      if (e.visible && (!e.map || e.map === this.map)) this._sampleAvatarWalk(e, dt)
     }
 
     if (this.moveMarker?.valid && !this.moveMarker.reachedAt && !p.path.length && Math.hypot(p.x - this.moveMarker.x, p.y - this.moveMarker.y) < 20) {
@@ -1680,22 +1684,36 @@ export class Engine {
     this._computeHint()
   }
 
-  _sampleAvatarWalk(e) {
+  _sampleAvatarWalk(e, dt) {
     const mounted = e === this.player && !!this.mountedVehicleId
-    const reacting = !mounted && Number(e.meta?.reactionLockUntil || 0) > this.t
+    const reacting = !mounted && this._reactionUntil(e) > this.t
+    let rideTransitionActive = false
     if (e === this.player && e.meta?.rideMotion) {
       const motion = e.meta.rideMotion
-      if (!rideTransitionPose(motion, this.t, this.reduceMotion).active && (motion.phase === 'mount' || motion.phase === 'dismount')) {
+      rideTransitionActive = rideTransitionPose(motion, this.t, this.reduceMotion).active
+      if (!rideTransitionActive && (motion.phase === 'mount' || motion.phase === 'dismount')) {
         delete e.meta.rideMotion
       }
     }
-    return sampleWalkFrame(e.walkAnimation, {
+    const walkSuppressed = e.sitting || reacting || mounted || rideTransitionActive
+    const frame = sampleWalkFrame(e.walkAnimation, {
       x: e.x,
       y: e.y,
       speed: e.speed,
       moving: e.moving,
-      paused: this.reduceMotion || e.sitting || reacting
+      paused: this.reduceMotion || walkSuppressed
     })
+    sampleAvatarWalkMotion(e.walkMotion, {
+      distance: e.walkAnimation.distance,
+      direction: e.dir,
+      speed: e.speed,
+      moving: e.walkAnimation.advanced,
+      paused: walkSuppressed,
+      reset: e.walkAnimation.teleported,
+      reduceMotion: this.reduceMotion,
+      deltaMs: dt
+    })
+    return frame
   }
 
   _emitStep(e) {
@@ -2434,10 +2452,11 @@ export class Engine {
     const rideKind = mounted?.kind || rideMotion?.kind || null
     const dismounting = !mounted && rideMotion?.phase === 'dismount' && ridePose.active && !!rideKind
     const walkFrame = e.walkAnimation?.frame || 'idle'
+    const walkAdvanced = !!e.walkAnimation?.advanced
     // Only canonical 3x4 sheets are safe to slice. A malformed/partial sheet
     // falls back to the audited directional still instead of leaking an
     // adjacent action into the walking avatar.
-    const useWalkSheet = !!(isWalkSheetCompatible(walkSheet) && e.moving && !e.sitting && !mounted && !this.reduceMotion)
+    const useWalkSheet = !!(isWalkSheetCompatible(walkSheet) && walkAdvanced && !e.sitting && !mounted && !this.reduceMotion)
     const useMotionSheet = useWalkSheet
     const source = useMotionSheet ? sheetSource(e.dir, walkFrame) : null
     const sourceW = source?.width || img?.width
@@ -2453,13 +2472,13 @@ export class Engine {
     })
     const { drawW, drawH } = frameLayout
     const frameStride = walkFrame === 'stepL' ? -1 : walkFrame === 'stepR' ? 1 : 0
-    const fallbackStride = !mounted && !this.reduceMotion && e.moving ? Math.sin(this.t / 62 + e.x * .015) : 0
+    const fallbackStride = !mounted && !this.reduceMotion && walkAdvanced ? Math.sin(this.t / 62 + e.x * .015) : 0
     const stride = mounted ? 0 : (useMotionSheet ? frameStride : fallbackStride)
     // The authored contact anchor already carries the gait. Vertical sine/bob
     // offsets lift that anchor away from the shadow and make both walking and
     // idle avatars appear to hover, so standing poses remain ground-locked.
     const bob = 0
-    const stepX = !useMotionSheet && e.moving && (e.dir === 'up' || e.dir === 'down') ? stride * .65 : 0
+    const stepX = !useMotionSheet && walkAdvanced && (e.dir === 'up' || e.dir === 'down') ? stride * .65 : 0
     const isTarget = this.interactionTarget?.type === 'agent' && this.interactionTarget.id === e.id
     const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 145) * 1.6
     const baseRideLift = rideKind === 'bicycle' ? 9 : rideKind === 'scooter' ? 3 : 0
@@ -2474,6 +2493,15 @@ export class Engine {
     const reactionMotion = isPlayer
       ? { x: 0, y: 0, rotation: 0 }
       : this.npcReactions.visualOffset(e, this.t, this.reduceMotion)
+    const walkMotion = e.walkMotion?.pose || NEUTRAL_AVATAR_WALK_POSE
+    const standingMotion = {
+      x: (reactionMotion.x || 0) + (walkMotion.x || 0) + (ridePose.offsetX || 0),
+      y: (reactionMotion.y || 0) + (walkMotion.y || 0) + (ridePose.hop || 0),
+      rotation: (reactionMotion.rotation || 0) + (walkMotion.rotation || 0) + (ridePose.rotation || 0),
+      shearX: walkMotion.shearX || 0,
+      scaleX: (reactionMotion.scaleX ?? 1) * (walkMotion.scaleX ?? 1) * ridePose.scaleX,
+      scaleY: (reactionMotion.scaleY ?? 1) * (walkMotion.scaleY ?? 1) * ridePose.scaleY
+    }
 
     if (isTarget) {
       ctx.fillStyle = 'rgba(102,229,162,.13)'
@@ -2484,7 +2512,14 @@ export class Engine {
     // shadow as well made the wheels look embedded in a dark puddle.
     if (!mounted) {
       ctx.fillStyle = isPlayer ? 'rgba(20,15,36,.34)' : 'rgba(18,14,26,.27)'
-      ctx.beginPath(); ctx.ellipse(e.x, e.y + 2, Math.max(10, drawW * (.36 - Math.abs(stride) * .035)), 4.6 - Math.abs(stride) * .4, 0, 0, Math.PI * 2); ctx.fill()
+      ctx.globalAlpha = walkMotion.shadowAlpha ?? 1
+      ctx.beginPath(); ctx.ellipse(
+        e.x, e.y + 2,
+        Math.max(10, drawW * .36 * (walkMotion.shadowScaleX ?? 1)),
+        4.6 * (walkMotion.shadowScaleY ?? 1),
+        0, 0, Math.PI * 2
+      ); ctx.fill()
+      ctx.globalAlpha = 1
     }
     if (isPlayer) {
       ctx.fillStyle = 'rgba(99,82,219,.12)'
@@ -2508,14 +2543,12 @@ export class Engine {
     } else if (img || useMotionSheet) {
       ctx.save()
       ctx.translate(
-        Math.round(e.x + reactionMotion.x + ridePose.offsetX),
-        Math.round(e.y + reactionMotion.y + ridePose.hop)
+        Math.round(e.x + standingMotion.x),
+        Math.round(e.y + standingMotion.y)
       )
-      ctx.rotate(reactionMotion.rotation + ridePose.rotation)
-      ctx.scale(
-        (reactionMotion.scaleX ?? 1) * ridePose.scaleX,
-        (reactionMotion.scaleY ?? 1) * ridePose.scaleY
-      )
+      ctx.rotate(standingMotion.rotation)
+      ctx.transform(1, 0, standingMotion.shearX, 1, 0, 0)
+      ctx.scale(standingMotion.scaleX, standingMotion.scaleY)
       if (useMotionSheet) {
         ctx.drawImage(
           walkSheet,
@@ -2540,7 +2573,7 @@ export class Engine {
         bob,
         time: this.t,
         reduceMotion: this.reduceMotion,
-        visualOffset: reactionMotion
+        visualOffset: standingMotion
       })
     }
     if (held) this._drawWorldObject(held)
