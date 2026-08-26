@@ -108,6 +108,10 @@ export class Engine {
     this.moveMarker = null    // 유저 클릭 이동 피드백
     this.hoverTile = null     // 마우스가 가리키는 이동 가능 타일
     this.interactionTarget = null
+    // A task guide is intentionally independent from the transient proximity
+    // hint. Picking up a prop changes interactionTarget to the player, while
+    // the teammate selected by the task must remain visually identifiable.
+    this.guideTarget = null
     this.stepFx = []          // 발걸음 먼지/잔상
     this.impactFx = []        // 던진 소품의 충돌/바운스 파티클
     this.npcReactions = new NpcReactionSystem({ tileSize: T })
@@ -210,6 +214,7 @@ export class Engine {
     this.npcReactions.forgetAgent(id)
     if (e) this.avatarEmotions.forget(e)
     this.agents.delete(id)
+    if (this.guideTarget?.type === 'agent' && this.guideTarget.id === id) this.setGuideTarget(null)
   }
   agent(id) { return this.agents.get(id) }
   clearAgents() {
@@ -219,6 +224,34 @@ export class Engine {
     }
     this.npcReactions.reset(this.agents)
     this.agents.clear()
+    this.setGuideTarget(null)
+  }
+
+  /**
+   * Persistently highlights a task target without changing the current E/F
+   * interaction. Agent targets are stored by id so the ring follows autonomous
+   * movement. Passing null (or an unknown agent) clears the guide.
+   */
+  setGuideTarget(target = null) {
+    if (target == null) {
+      this.guideTarget = null
+      return null
+    }
+    const descriptor = typeof target === 'string' ? { type: 'agent', id: target } : target
+    if (descriptor?.type !== 'agent' || !descriptor.id || !this.agents.has(descriptor.id)) {
+      this.guideTarget = null
+      return null
+    }
+    this.guideTarget = { type: 'agent', id: descriptor.id }
+    return this.guideTarget
+  }
+
+  _resolveGuideTarget() {
+    const target = this.guideTarget
+    if (!target) return null
+    const agent = target.type === 'agent' ? this.agents.get(target.id) : null
+    if (!agent || !agent.visible || (agent.map && agent.map !== this.map)) return null
+    return this._resolveInteractionTarget(target)
   }
 
   // ---------- autonomous NPC public API ----------
@@ -437,6 +470,7 @@ export class Engine {
     this.moveMarker = null
     this.hoverTile = null
     this.interactionTarget = null
+    this.setGuideTarget(null)
     this.currentHint = null
     this._hintKey = ''
     this.onHint(null)
@@ -792,6 +826,7 @@ export class Engine {
   }
   stop() {
     cancelAnimationFrame(this._raf)
+    this.setGuideTarget(null)
     this.npcReactions.reset(this.agents)
     this.avatarEmotions.reset([this.player, ...this.agents.values()])
     this._motionMedia?.removeEventListener?.('change', this._onMotionChange)
@@ -1902,6 +1937,7 @@ export class Engine {
     if (this.map === 'arcade') this._drawCabinetScreens()
     this._drawMovementGuides()
     this._drawInteractionHalo()
+    this._drawGuideTargetHalo()
     this._drawStepFx()
     this._drawImpactFx()
 
@@ -2416,6 +2452,24 @@ export class Engine {
     ctx.restore()
   }
 
+  _drawGuideTargetHalo() {
+    const { ctx } = this
+    const target = this._resolveGuideTarget()
+    if (!target) return
+    const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 170) * 2
+    const rx = target.rx + 5 + pulse
+    const ry = target.ry + 2 + pulse * .3
+    ctx.save()
+    ctx.fillStyle = 'rgba(255,210,82,.12)'
+    ctx.strokeStyle = 'rgba(171,143,255,.98)'
+    ctx.lineWidth = 3
+    ctx.beginPath(); ctx.ellipse(target.x, target.y + 1, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+    ctx.strokeStyle = 'rgba(255,215,91,.96)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath(); ctx.ellipse(target.x, target.y + 1, rx + 5, ry + 2, 0, 0, Math.PI * 2); ctx.stroke()
+    ctx.restore()
+  }
+
   _drawInteractionKey() {
     const { ctx } = this
     const a = this.interactionTarget
@@ -2479,7 +2533,8 @@ export class Engine {
     // idle avatars appear to hover, so standing poses remain ground-locked.
     const bob = 0
     const stepX = !useMotionSheet && walkAdvanced && (e.dir === 'up' || e.dir === 'down') ? stride * .65 : 0
-    const isTarget = this.interactionTarget?.type === 'agent' && this.interactionTarget.id === e.id
+    const isGuideTarget = this.guideTarget?.type === 'agent' && this.guideTarget.id === e.id
+    const isTarget = !isGuideTarget && this.interactionTarget?.type === 'agent' && this.interactionTarget.id === e.id
     const pulse = this.reduceMotion ? 0 : Math.sin(this.t / 145) * 1.6
     const baseRideLift = rideKind === 'bicycle' ? 9 : rideKind === 'scooter' ? 3 : 0
     const ridingLift = rideMotion?.phase === 'dismount' ? baseRideLift * ridePose.liftMix : 0

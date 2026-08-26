@@ -8,7 +8,7 @@ const STATUS_COPY = {
   locked: '조건 필요'
 }
 
-export default function StudioTaskList({ tasks = [], recommended = null, disabled = false, onSelect }) {
+export default function StudioTaskList({ tasks = [], recommended = null, disabled = false, suppressGuide = false, onSelect }) {
   const [open, setOpen] = useState(false)
   const [dismissedGuide, setDismissedGuide] = useState('')
   const shellRef = useRef(null)
@@ -19,12 +19,14 @@ export default function StudioTaskList({ tasks = [], recommended = null, disable
   const nextTask = guidedTask || recommended || tasks.find(task => task.enabled) || tasks[0]
   const progress = tasks.length ? (doneCount / tasks.length) * 100 : 0
   const summary = guidedTask || nextTask
-  const showGuide = !!(guidedTask && guidance && !open && !disabled && dismissedGuide !== guidedKey)
+  const showGuide = !!(guidedTask && guidance && !open && !disabled && !suppressGuide && dismissedGuide !== guidedKey)
 
   const selectTask = task => {
     if (!task?.enabled || disabled) return
     setOpen(false)
-    setDismissedGuide(studioTaskKey(task))
+    // Selecting any item starts a deliberate flow. Keep the currently
+    // recommended coach from reappearing behind that flow.
+    setDismissedGuide(guidedKey || studioTaskKey(task))
     onSelect?.(task)
   }
 
@@ -69,9 +71,9 @@ export default function StudioTaskList({ tasks = [], recommended = null, disable
       </button>
 
       {showGuide && (
-        <aside id="studio-task-coach" className="studio-task-coach" role="status" aria-live="polite">
+        <aside id="studio-task-coach" className="studio-task-coach" role="region" aria-label="다음 할 일 안내">
           <span className="task-coach-icon" aria-hidden="true">{guidedTask.icon || '✦'}</span>
-          <span className="task-coach-copy">
+          <span className="task-coach-copy" role="status" aria-live="polite">
             <small>{guidance.label}</small>
             <b>{guidedTask.title}</b>
             <span>{guidance.destination ? `📍 ${guidance.destination} · ` : ''}{guidance.text}</span>

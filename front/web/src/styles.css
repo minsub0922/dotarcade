@@ -244,6 +244,7 @@ code { padding: 2px 6px; border-radius: 6px; background: #ececf1; color: #454551
 .task-coach-close { display: grid; width: 26px; min-width: 26px; height: 26px; min-height: 26px; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: rgba(255,255,255,.55); box-shadow: none; font-size: 17px; }
 .task-coach-close:hover:not(:disabled) { border: 0; background: rgba(255,255,255,.1); color: #fff; transform: none; }
 .app.has-panel .studio-task-coach { display: none; }
+.app:has(.task-action-guide) .studio-task-coach { display: none; }
 .studio-task-popover { position: absolute; top: calc(100% + 14px); left: 50%; z-index: 65; width: min(560px, calc(100vw - 32px)); overflow: hidden; border: 1px solid #d9d7e5; border-radius: 18px; background: rgba(255,255,255,.985); box-shadow: 0 22px 60px rgba(19,18,35,.24); transform: translateX(-50%); animation: taskListIn .16s ease-out; pointer-events: auto; }
 .studio-task-popover > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 12px; border-bottom: 1px solid #ebeaf0; background: linear-gradient(135deg,#f8f7ff,#fff); }
 .studio-task-popover > header div { display: flex; flex-direction: column; gap: 2px; }
@@ -1268,13 +1269,16 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
   .objective-next i { color: #bdb5ff; }
   .objective-track { background: rgba(255,255,255,.14); }
   .logo-mark { width: 34px; height: 34px; }
-  .hud-btns { top: auto; bottom: 10px; left: 50%; width: auto; flex-direction: row; padding: 7px; border-radius: 17px; transform: translateX(-50%); }
+  .hud-btns { top: auto; bottom: 10px; left: 50%; width: auto; flex-direction: row; padding: 7px; border-radius: 17px; transform: translateX(-50%); transition: opacity .16s ease, transform .16s ease; }
+  .app:has(.studio-task-shell.open) .hud-btns { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(12px); }
   .action-label { display: none; }
   .rail-divider { width: 1px; height: 28px; margin: 6px 1px; }
   .player-card { display: none; }
   /* Keep zoom controls out of the interaction prompt and bottom navigation.
      The previous shared bottom offset stacked all three controls together. */
   .map-controls { top: 126px; right: 10px; bottom: auto; }
+  .app:not(.has-panel):has(.studio-task-coach) .map-controls,
+  .app:not(.has-panel):has(.task-action-guide) .map-controls { top: 204px; }
   .map-controls span { display: none; }
   .map-badge { display: none; }
   .hint-bar { bottom: 74px; }
@@ -1369,6 +1373,8 @@ button.direction-card.recommended { border-color: #8073df; background: linear-gr
   .studio-task-item .task-state { grid-column: 2; width: 100%; min-width: 0; flex-direction: row; align-items: center; justify-content: space-between; }
   .task-guide-line { align-items: flex-start; flex-direction: column; }
   .task-guide-line span { min-width: 0; }
+  .app:not(.has-panel):has(.studio-task-coach) .map-controls,
+  .app:not(.has-panel):has(.task-action-guide) .map-controls { top: 260px; }
   .task-action-guide { top: 112px; grid-template-columns: 34px minmax(0,1fr) 27px; gap: 8px; padding: 9px; }
   .task-action-guide-icon { width: 34px; height: 34px; border-radius: 10px; font-size: 16px; }
   .task-action-guide-keys { grid-column: 1 / -1; grid-row: 2; justify-content: center; }

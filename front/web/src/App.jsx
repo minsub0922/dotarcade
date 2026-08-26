@@ -212,6 +212,10 @@ export default function App() {
 
   useEffect(() => () => journeyRef.current?.abort(), [])
 
+  useEffect(() => {
+    if (taskGuideRef.current && (panel || map !== 'office')) clearTaskGuide()
+  }, [panel, map])
+
   // ---------- keyboard ----------
   useEffect(() => {
     const eng = () => engRef.current
@@ -261,13 +265,15 @@ export default function App() {
   // ---------- 상호작용 ----------
   function showTaskGuide(guide) {
     clearTaskGuide()
+    if (guide?.agentId) engRef.current?.setGuideTarget?.({ type: 'agent', id: guide.agentId })
     taskGuideRef.current = guide
     setTaskGuide(guide)
   }
 
   function clearTaskGuide() {
     const current = taskGuideRef.current
-    if (current?.agentId) engRef.current?.resumeAutonomy?.(current.agentId, current.suspensionReason)
+    engRef.current?.setGuideTarget?.(null)
+    if (current?.agentId && current?.suspensionReason) engRef.current?.resumeAutonomy?.(current.agentId, current.suspensionReason)
     taskGuideRef.current = null
     setTaskGuide(null)
   }
@@ -322,6 +328,7 @@ export default function App() {
     const st = useStore.getState()
     const eng = engRef.current
     if (!eng || st.map === targetMap) return
+    clearTaskGuide()
     if (targetMap === 'arcade') {
       eng.setMap('arcade', eng.maps.arcade.spawn)
       st.setMap('arcade')
@@ -364,6 +371,7 @@ export default function App() {
     const st = useStore.getState()
     if (isMeetingActive(st.meeting)) return st.toast('진행 중이거나 일시정지된 회의를 먼저 마쳐 주세요', 'warn')
     if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) return st.toast('플레이테스트가 끝난 뒤 새 회의를 시작할 수 있습니다', 'warn')
+    clearTaskGuide()
     if (st.map === 'arcade') switchMap()
     settleForActivity('회의 시작')
     st.closePanel()
@@ -375,6 +383,7 @@ export default function App() {
     if (st.arcade && ['running', 'summarizing'].includes(st.arcade.status)) return st.toast('오락실 시뮬레이션이 이미 진행 중입니다', 'warn')
     if (isMeetingActive(st.meeting)) return st.toast('제작 회의를 마친 뒤 배포할 수 있습니다', 'warn')
     const eng = engRef.current
+    clearTaskGuide()
     settleForActivity('오락실 배포')
     if (st.map !== 'arcade') { eng.setMap('arcade', eng.maps.arcade.spawn); st.setMap('arcade') }
     st.openPanel('arcade')
@@ -511,13 +520,13 @@ export default function App() {
           const approach = [[tx - 1, ty], [tx + 1, ty], [tx, ty + 1], [tx, ty - 1]]
             .find(([x, y]) => eng.maps.office.collision[y]?.[x] === '.') || [tx, ty]
           const suspensionReason = `task-guide:${objective.id || objective.action}`
-          eng.suspendAutonomy?.(nearest.member.id, suspensionReason)
+          const autonomySuspended = eng.suspendAutonomy?.(nearest.member.id, suspensionReason) === true
           nearest.entity.path = []
           nearest.entity.cb = null
           try {
             await travelTo('office', approach, `${nearest.member.name} 자리`, controller.signal)
           } catch (error) {
-            eng.resumeAutonomy?.(nearest.member.id, suspensionReason)
+            if (autonomySuspended) eng.resumeAutonomy?.(nearest.member.id, suspensionReason)
             throw error
           }
           eng.player.dir = eng.player.x < nearest.entity.x ? 'right' : 'left'
@@ -528,7 +537,7 @@ export default function App() {
             title: `${nearest.member.name}에게 직접 상호작용해 보세요`,
             text: objective.guide || 'E로 대화하거나, 주변 소품을 E로 집은 뒤 F로 던져 맞혀 보세요.',
             agentId: nearest.member.id,
-            suspensionReason
+            suspensionReason: autonomySuspended ? suspensionReason : null
           })
           break
         }
@@ -660,7 +669,8 @@ export default function App() {
         onMilestone={requestMilestone}
         onAvatarProfile={setAvatarProfileId}
         taskActivity={taskActivity}
-        journeyActive={milestoneFlow?.status === 'moving'}
+        journeyActive={!!milestoneFlow}
+        suppressTaskCoach={!!milestoneFlow || !!taskGuide}
         worldReady={ready}
       />
       <div className={`stage ${map}`}>

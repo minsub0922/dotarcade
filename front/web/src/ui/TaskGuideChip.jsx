@@ -3,9 +3,9 @@ import React from 'react'
 export default function TaskGuideChip({ guide, onClose }) {
   if (!guide) return null
   return (
-    <aside className="task-action-guide" role="status" aria-live="polite" aria-label="할 일 실행 안내">
+    <aside className="task-action-guide" role="region" aria-label="할 일 실행 안내">
       <span className="task-action-guide-icon" aria-hidden="true">{guide.icon || '💬'}</span>
-      <span className="task-action-guide-copy">
+      <span className="task-action-guide-copy" role="status" aria-live="polite">
         <small>할 일 실행 안내 · 대상이 바닥에 강조됩니다</small>
         <b>{guide.title}</b>
         <span>{guide.text}</span>

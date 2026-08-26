@@ -90,6 +90,63 @@ test('tapping an avatar while carrying does not auto-aim or consume the held pro
   assert.deepEqual(events.map(event => event.type), ['pickup'])
 })
 
+test('a guide target follows its agent and survives unrelated proximity and held-prop hints', () => {
+  const { engine } = createEngine()
+  const teammate = engine.addAgent('designer', 'designer', [15, 10], { map: 'office', autonomy: false })
+  teammate.x = engine.player.x + 110
+  teammate.y = engine.player.y + 20
+
+  assert.deepEqual(engine.setGuideTarget(teammate.id), { type: 'agent', id: teammate.id })
+  assert.equal(engine.interactionTarget, null, 'setting guidance must not manufacture an E interaction')
+
+  teammate.x += 35
+  const movedTarget = engine._resolveGuideTarget()
+  assert.equal(movedTarget.x, teammate.x, 'the guide resolves the live agent position instead of a stale coordinate')
+  assert.equal(movedTarget.y, teammate.y)
+
+  const book = placeNearPlayer(engine, 'office-book-a')
+  assert.equal(engine.pickupObject(book.id), true)
+  engine._computeHint()
+  assert.equal(engine.interactionTarget?.type, 'heldProp')
+  assert.deepEqual(engine.guideTarget, { type: 'agent', id: teammate.id })
+  assert.equal(engine._resolveGuideTarget()?.id, teammate.id)
+
+  const ellipses = []
+  const strokes = []
+  engine.ctx = {
+    save() {}, restore() {}, beginPath() {}, fill() {},
+    ellipse(...args) { ellipses.push(args) },
+    stroke() { strokes.push(this.strokeStyle) },
+    fillStyle: '', strokeStyle: '', lineWidth: 0
+  }
+  engine.reduceMotion = true
+  engine._drawGuideTargetHalo()
+
+  assert.equal(ellipses.length, 2, 'the persistent guide uses a two-ring floor marker')
+  assert.equal(ellipses[0][0], teammate.x)
+  assert.equal(ellipses[0][1], teammate.y + 1)
+  assert.deepEqual(strokes, ['rgba(171,143,255,.98)', 'rgba(255,215,91,.96)'])
+})
+
+test('guide targets clear on invalidation, agent reset and map changes', () => {
+  const { engine } = createEngine()
+  engine.addAgent('dev1', 'dev1', [13, 10], { map: 'office', autonomy: false })
+
+  engine.setGuideTarget('dev1')
+  assert.ok(engine.guideTarget)
+  assert.equal(engine.setGuideTarget({ type: 'agent', id: 'missing' }), null)
+  assert.equal(engine.guideTarget, null)
+
+  engine.setGuideTarget('dev1')
+  engine.setMap('arcade', [12, 10])
+  assert.equal(engine.guideTarget, null, 'map transitions reset task guidance')
+
+  engine.setMap('office', [12, 10])
+  engine.setGuideTarget('dev1')
+  engine.clearAgents()
+  assert.equal(engine.guideTarget, null, 'clearing the agent collection also resets guidance')
+})
+
 test('a fast prop hits the first avatar crossed between frames and ignores avatars off its path', () => {
   const { engine, events } = createEngine()
   engine.t = 1000

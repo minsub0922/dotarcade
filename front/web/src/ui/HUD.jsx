@@ -5,7 +5,7 @@ import { isMeetingActive, meetingStatusCopy } from '../meeting/status.js'
 import { getStudioMilestone, getStudioMilestones, MILESTONE_ACTION } from './milestone.js'
 import StudioTaskList from './StudioTaskList.jsx'
 
-export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp, onMilestone, onAvatarProfile, taskActivity = null, journeyActive = false, worldReady = true }) {
+export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp, onMilestone, onAvatarProfile, taskActivity = null, journeyActive = false, suppressTaskCoach = false, worldReady = true }) {
   const config = useStore(s => s.config)
   const games = useStore(s => s.games)
   const map = useStore(s => s.map)
@@ -29,7 +29,7 @@ export default function HUD({ onLibrary, onMeeting, onArcade, onSettings, onHelp
           <span className="logo-type"><b>DOTCADE</b><small>GAME STUDIO</small></span>
         </div>
 
-        <StudioTaskList tasks={tasks} recommended={objective} disabled={interactionDisabled} onSelect={onMilestone} />
+        <StudioTaskList tasks={tasks} recommended={objective} disabled={interactionDisabled} suppressGuide={suppressTaskCoach} onSelect={onMilestone} />
 
         <div className="hud-right">
           <div className="presence" aria-label={`온라인 ${TEAM.length + 1}명`}>
