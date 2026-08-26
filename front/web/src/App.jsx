@@ -155,6 +155,9 @@ export default function App() {
       const avatarSpriteIds = [PLAYER, ...TEAM, ...VISITORS].map(avatar => avatar.sprite || avatar.id)
       await eng.load([...new Set(avatarSpriteIds)])
       eng.player.label = `${PLAYER.name} (팀장)`
+      eng.player.color = PLAYER.color
+      eng.player.meta.shortName = PLAYER.name
+      eng.player.meta.role = PLAYER.role
 
       // 오피스 팀 배치
       const seats = maps.office.seats
@@ -163,6 +166,7 @@ export default function App() {
         const e = eng.addAgent(m.id, m.sprite, s.desk, { label: `${m.name} · ${m.role}`, color: m.color, home: { desk: s.desk, face: s.face } })
         e.ambient = m.ambient
         e.meta.shortName = m.name
+        e.meta.role = m.role
         eng.sit(m.id, s.desk, s.face)
       })
       stopHandheldAmbience = startOfficeHandheldAmbience(eng, TEAM, () => useStore.getState())

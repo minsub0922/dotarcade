@@ -28,7 +28,11 @@ import {
 import {
   NEUTRAL_AVATAR_WALK_POSE, createAvatarWalkMotionState, sampleAvatarWalkMotion
 } from './avatarWalkMotion.js'
+import {
+  SEAT_PHASES, advanceSeatMotion, createSeatMotionState, seatApproachProximity, seatPoseLayout
+} from './seatMotion.js'
 import { AvatarEmotionSystem } from './avatarEmotions.js'
+import { drawAgentRoleLabel } from './agentRoleLabel.js'
 import {
   dynamicAvoidTiles, layoutOccluders, navigationGridWithAvoid, occupiedEntityTiles, randomWalkableAvoiding
 } from './worldLayout.js'
@@ -37,6 +41,10 @@ const T = 48
 const WORLD_W = 1440
 const WORLD_H = 960
 const PLAYER_WALK_SPEED = 4.4
+const AUTO_SEAT_ENTER_RADIUS = 20
+const AUTO_SEAT_RELEASE_RADIUS = 34
+const AUTO_SEAT_IDLE_MS = 100
+const AUTO_SEAT_REACTION_COOLDOWN = 350
 const AVATAR_VISUAL = Object.freeze({
   player: { width: 54, height: 82 },
   npc: { width: 52, height: 79 },
@@ -177,6 +185,8 @@ export class Engine {
       stepAt: 0, stepSide: 0,
       walkAnimation: createWalkState(x, y),
       walkMotion: createAvatarWalkMotionState(),
+      seatMotion: createSeatMotionState(),
+      seatIdleMs: 0, seatCandidateId: null, seatBlockedUntil: 0,
       bubble: null, cb: null, state: 'idle', idleT: 2000 + Math.random() * 4000,
       label: '', color: '#fff', visible: true, home: null, meta: {}, autonomy: null
     }
@@ -313,6 +323,40 @@ export class Engine {
     return e?.autonomy ? autonomySnapshot(e.autonomy) : null
   }
 
+  getChairSeatingState() {
+    const occupancy = this._seatOccupancy()
+    const actors = this._eligibleSeatActors().map(e => ({
+      id: e.id,
+      kind: e === this.player ? 'player' : 'team',
+      sitting: !!e.sitting,
+      phase: e.seatMotion?.phase || SEAT_PHASES.STANDING,
+      mix: Number(e.seatMotion?.mix) || 0,
+      seatId: e.seatMotion?.seatId || e.meta?.seat?.id || null,
+      source: e.meta?.seat?.source || null,
+      candidateId: e.seatCandidateId || null,
+      idleMs: Math.round(e.seatIdleMs || 0),
+      blockedReason: this._autoSeatBlockReason(e),
+      position: { x: e.x, y: e.y }
+    }))
+    const chairs = this._officeDeskSeats().map(seat => ({
+      id: seat.id,
+      ownerId: seat.ownerId,
+      tile: [...seat.tile],
+      face: seat.face,
+      anchor: { ...seat.anchor },
+      occupiedBy: occupancy.get(seat.id) || null
+    }))
+    return {
+      enabled: this.map === 'office' && !this.meetingMode && !this.simMode,
+      map: this.map,
+      meetingMode: !!this.meetingMode,
+      chairs,
+      actors,
+      player: actors.find(actor => actor.id === 'player') || null,
+      team: actors.filter(actor => actor.kind === 'team')
+    }
+  }
+
   getReactionEvidence(limit = 40) {
     return this.npcReactions.getEvidence(limit)
   }
@@ -368,7 +412,7 @@ export class Engine {
     // `goTo` command that may still be taking the visitor to an idle spot.
     e.path = []
     e.cb = null
-    e.sitting = false
+    this._standEntity(e, 'assignment')
     delete e.meta.autonomyPath
     a.externalCommand = false
     a.externalCommandAt = 0
@@ -462,6 +506,7 @@ export class Engine {
 
   setMap(name, playerTile) {
     this.npcReactions.reset(this.agents)
+    this._standEntity(this.player, 'map-change', { immediate: true })
     if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
     if (this.heldObjectId) this.dropHeld({ silent: true })
     this.map = name
@@ -507,6 +552,284 @@ export class Engine {
   }
 
   // ---------- agent commands ----------
+  _officeDeskSeats() {
+    const seats = this.maps?.office?.seats || {}
+    return Object.entries(seats)
+      .filter(([, value]) => Array.isArray(value?.desk) && value.desk.length >= 2)
+      .map(([ownerId, value]) => {
+        const tile = [Number(value.desk[0]), Number(value.desk[1])]
+        const anchor = { x: tile[0] * T + T / 2, y: tile[1] * T + T - 8 }
+        return {
+          id: `desk-${ownerId}`,
+          ownerId,
+          kind: 'desk',
+          tile,
+          face: value.face || 'up',
+          x: anchor.x,
+          y: anchor.y,
+          anchor,
+          approach: anchor,
+          occluderId: `desk-${ownerId}-front`
+        }
+      })
+  }
+
+  _seatActorById(id) {
+    return id === 'player' ? this.player : this.agents.get(id)
+  }
+
+  _eligibleSeatActors() {
+    const eligibleIds = new Set(this._officeDeskSeats().map(seat => seat.ownerId))
+    return [this.player, ...this.agents.values()].filter(e => (
+      eligibleIds.has(e.id) && (e === this.player || !!e.home)
+    ))
+  }
+
+  _seatForTile(tile) {
+    if (!Array.isArray(tile)) return null
+    return this._officeDeskSeats().find(seat => seat.tile[0] === tile[0] && seat.tile[1] === tile[1]) || null
+  }
+
+  _hasSeatState(e) {
+    return !!(e?.sitting || e?.meta?.seat || (e?.seatMotion?.mix || 0) > 0)
+  }
+
+  _seatEntity(e, seat, { source = 'scripted', immediate = false } = {}) {
+    if (!e || !seat?.anchor) return false
+    e.x = seat.anchor.x
+    e.y = seat.anchor.y
+    e.dir = seat.face || 'down'
+    e.path = []
+    e.moving = false
+    const resolveImmediately = immediate || this.reduceMotion
+    e.seatMotion = resolveImmediately
+      ? createSeatMotionState({ phase: SEAT_PHASES.SEATED, seat })
+      : advanceSeatMotion(createSeatMotionState(), { actor: e, seat, near: true, deltaMs: 0 })
+    e.sitting = resolveImmediately || seatPoseLayout(e.seatMotion).isSeated
+    e.seatIdleMs = 0
+    e.seatCandidateId = seat.id
+    e.meta.seat = {
+      id: seat.id,
+      ownerId: seat.ownerId || null,
+      kind: seat.kind || 'chair',
+      tile: seat.tile ? [...seat.tile] : null,
+      face: e.dir,
+      anchor: { ...seat.anchor },
+      enteredAt: this.t,
+      source,
+      occluderId: seat.occluderId || null
+    }
+    delete e.meta.autonomyPath
+    return true
+  }
+
+  _standEntity(e, reason = 'manual', { immediate = false, cooldownMs = 140 } = {}) {
+    if (!e) return false
+    const hadSeat = this._hasSeatState(e)
+    e.seatMotion = advanceSeatMotion(e.seatMotion, {
+      enabled: false,
+      immediate,
+      // A one-millisecond seed moves mix=1 into EXITING immediately. Passing
+      // zero leaves the pure reducer at its seated upper bound for one frame.
+      deltaMs: immediate ? 0 : 1,
+      reduceMotion: this.reduceMotion
+    })
+    e.sitting = false
+    e.seatIdleMs = 0
+    e.seatCandidateId = null
+    e.seatBlockedUntil = Math.max(e.seatBlockedUntil || 0, this.t + Math.max(0, cooldownMs))
+    if (e.meta.seat) {
+      e.meta.lastSeatExit = { id: e.meta.seat.id, reason, at: this.t }
+      delete e.meta.seat
+    }
+    return hadSeat
+  }
+
+  stand(id, reason = 'manual') {
+    return this._standEntity(this._seatActorById(id), reason)
+  }
+
+  _seatOccupancy() {
+    const occupancy = new Map()
+    for (const e of this._eligibleSeatActors()) {
+      const seatId = e.seatMotion?.seatId || e.meta?.seat?.id
+      if (seatId && ((e.seatMotion?.mix || 0) > 0 || e.sitting)) occupancy.set(seatId, e.id)
+    }
+    return occupancy
+  }
+
+  _ownerNeedsSeat(seat, actor) {
+    if (!seat?.ownerId || seat.ownerId === actor.id) return false
+    const owner = this._seatActorById(seat.ownerId)
+    if (!owner || !owner.visible || (owner.map && owner.map !== 'office')) return false
+    if ((owner.seatMotion?.seatId || owner.meta?.seat?.id) === seat.id) return true
+    const proximity = seatApproachProximity(owner, seat, {
+      enterRadius: AUTO_SEAT_ENTER_RADIUS,
+      releaseRadius: AUTO_SEAT_RELEASE_RADIUS
+    })
+    if (proximity.withinRelease) return true
+    const destination = owner.path?.at(-1) || owner.autonomy?.currentGoal?.targetTile
+    return Array.isArray(destination) && destination[0] === seat.tile[0] && destination[1] === seat.tile[1]
+  }
+
+  _autoSeatBlockReason(e) {
+    if (this.map !== 'office' || (e.map && e.map !== 'office')) return 'map'
+    if (this.meetingMode) return 'meeting'
+    if (this.simMode) return 'simulation'
+    if (!e.visible) return 'hidden'
+    if (e.path?.length || e.moving) return 'movement'
+    if ((e.seatBlockedUntil || 0) > this.t) return 'cooldown'
+    if (this._reactionUntil(e) > this.t) return 'reaction'
+    if (e.meta?.chatting || e.meta?.activity === 'socialize' || (e.meta?.socialLock?.until || 0) > this.t) return 'social'
+    if (e === this.player) {
+      if (this.freezePlayer) return 'frozen'
+      if (this.mountedVehicleId || e.meta?.rideMotion) return 'mounted'
+      if (this.heldObjectId) return 'holding'
+    }
+    if (!e.meta?.seat && e.autonomy?.currentGoal && e.autonomy.currentGoal.kind !== NPC_GOALS.IDLE) return 'autonomy'
+    return null
+  }
+
+  _autoSeatCandidate(e, occupancy) {
+    return this._officeDeskSeats()
+      .map(seat => ({
+        seat,
+        proximity: seatApproachProximity(e, seat, {
+          enterRadius: AUTO_SEAT_ENTER_RADIUS,
+          releaseRadius: AUTO_SEAT_RELEASE_RADIUS
+        })
+      }))
+      .filter(({ seat, proximity }) => {
+        const occupiedBy = occupancy.get(seat.id)
+        if (occupiedBy && occupiedBy !== e.id) return false
+        if (seat.id === e.seatMotion?.seatId) return proximity.withinRelease
+        return proximity.withinEnter && !this._ownerNeedsSeat(seat, e)
+      })
+      .sort((a, b) => (
+        Number(b.seat.ownerId === e.id) - Number(a.seat.ownerId === e.id)
+        || a.proximity.distance - b.proximity.distance
+        || a.seat.id.localeCompare(b.seat.id)
+      ))[0] || null
+  }
+
+  _updateAutomaticChairSeating(dt) {
+    const actors = this._eligibleSeatActors()
+    const occupancy = this._seatOccupancy()
+    for (const e of actors) {
+      const reactionUntil = this._reactionUntil(e)
+      if (reactionUntil > this.t && this._hasSeatState(e)) {
+        this._standEntity(e, 'reaction', {
+          cooldownMs: reactionUntil - this.t + AUTO_SEAT_REACTION_COOLDOWN
+        })
+        continue
+      }
+      const socialActive = e.meta?.chatting
+        || e.meta?.activity === 'socialize'
+        || (e.meta?.socialLock?.until || 0) > this.t
+      if (socialActive && this._hasSeatState(e)) {
+        // Chat can also be initiated by the React layer, bypassing the world
+        // interaction helpers. Reconcile the chair claim here so a scripted
+        // desk sitter never rotates sideways through the desk while talking.
+        this._standEntity(e, 'social')
+        continue
+      }
+      // Scripted/home/meeting seats own their target. Their transition is
+      // advanced separately so meeting callbacks stay deterministic while the
+      // visible body still eases into the chair.
+      if (e.meta?.seat?.source && e.meta.seat.source !== 'proximity') continue
+      if (e.seatMotion?.phase === SEAT_PHASES.EXITING) continue
+
+      const blocked = this._autoSeatBlockReason(e)
+      if (blocked) {
+        if ((e.seatMotion?.mix || 0) > 0) this._standEntity(e, blocked)
+        else { e.seatIdleMs = 0; e.seatCandidateId = null }
+        continue
+      }
+      const candidate = this._autoSeatCandidate(e, occupancy)
+      if (!candidate) {
+        if ((e.seatMotion?.mix || 0) > 0) this._standEntity(e, 'left-chair')
+        else { e.seatIdleMs = 0; e.seatCandidateId = null }
+        continue
+      }
+      if (e.seatCandidateId !== candidate.seat.id) {
+        e.seatCandidateId = candidate.seat.id
+        e.seatIdleMs = 0
+      }
+      e.seatIdleMs += dt
+      if (e.seatIdleMs < AUTO_SEAT_IDLE_MS && !(e.seatMotion?.mix > 0)) continue
+
+      e.seatMotion = advanceSeatMotion(e.seatMotion, {
+        actor: e,
+        seat: candidate.seat,
+        near: true,
+        deltaMs: dt,
+        enterRadius: AUTO_SEAT_ENTER_RADIUS,
+        releaseRadius: AUTO_SEAT_RELEASE_RADIUS,
+        reduceMotion: this.reduceMotion
+      })
+      const pose = seatPoseLayout(e.seatMotion)
+      const settle = this.reduceMotion ? 1 : Math.min(1, dt / 80)
+      e.x += (candidate.seat.anchor.x - e.x) * settle
+      e.y += (candidate.seat.anchor.y - e.y) * settle
+      if (e.seatMotion.phase === SEAT_PHASES.SEATED) {
+        e.x = candidate.seat.anchor.x
+        e.y = candidate.seat.anchor.y
+      }
+      e.dir = candidate.seat.face
+      e.moving = false
+      e.sitting = pose.isSeated
+      e.meta.seat = {
+        id: candidate.seat.id,
+        ownerId: candidate.seat.ownerId,
+        kind: 'desk',
+        tile: [...candidate.seat.tile],
+        face: candidate.seat.face,
+        anchor: { ...candidate.seat.anchor },
+        enteredAt: e.meta.seat?.enteredAt ?? this.t,
+        source: 'proximity',
+        occluderId: candidate.seat.occluderId
+      }
+      occupancy.set(candidate.seat.id, e.id)
+    }
+  }
+
+  _advanceNonProximitySeatMotion(dt) {
+    for (const e of this._eligibleSeatActors()) {
+      if (e.seatMotion?.phase === SEAT_PHASES.EXITING) {
+        e.seatMotion = advanceSeatMotion(e.seatMotion, {
+          enabled: false,
+          deltaMs: dt,
+          reduceMotion: this.reduceMotion
+        })
+        if (e.seatMotion.phase === SEAT_PHASES.STANDING) e.sitting = false
+        continue
+      }
+      const seatMeta = e.meta?.seat
+      if (!seatMeta || seatMeta.source === 'proximity' || e.seatMotion?.phase === SEAT_PHASES.SEATED) continue
+      const seat = {
+        id: seatMeta.id,
+        ownerId: seatMeta.ownerId,
+        kind: seatMeta.kind,
+        tile: seatMeta.tile,
+        face: seatMeta.face,
+        x: seatMeta.anchor.x,
+        y: seatMeta.anchor.y,
+        anchor: seatMeta.anchor,
+        approach: seatMeta.anchor,
+        occluderId: seatMeta.occluderId
+      }
+      e.seatMotion = advanceSeatMotion(e.seatMotion, {
+        actor: e,
+        seat,
+        near: true,
+        deltaMs: dt,
+        reduceMotion: this.reduceMotion
+      })
+      e.dir = seat.face
+      e.sitting = seatPoseLayout(e.seatMotion).isSeated
+    }
+  }
+
   goTo(id, tile, cb, options = {}) {
     const e = id === 'player' ? this.player : this.agents.get(id)
     if (!e) return
@@ -518,7 +841,7 @@ export class Engine {
       e.autonomy.nextThinkAt = this.t + 400
       delete e.meta.autonomyPath
     }
-    e.sitting = false
+    this._standEntity(e, options.reason || 'go-to')
     const from = [Math.floor(e.x / T), Math.floor(e.y / T)]
     const path = astar(this.grid(), from, tile)
     e.path = path || []
@@ -529,16 +852,34 @@ export class Engine {
     e.cb = done
     if (!path || !path.length) { e.cb = null; done() }
   }
-  sit(id, tile, face) {
-    const e = this.agents.get(id); if (!e) return
-    e.x = tile[0] * T + T / 2; e.y = tile[1] * T + T - 8
-    e.dir = face || 'down'; e.sitting = true; e.path = []
-    delete e.meta.autonomyPath
+  sit(id, tile, face, options = {}) {
+    const e = this._seatActorById(id); if (!e) return false
+    const registered = this._seatForTile(tile)
+    const anchor = { x: tile[0] * T + T / 2, y: tile[1] * T + T - 8 }
+    const seat = registered || {
+      id: `scripted:${tile[0]}:${tile[1]}`,
+      ownerId: null,
+      kind: 'scripted',
+      tile: [...tile],
+      face: face || 'down',
+      x: anchor.x,
+      y: anchor.y,
+      anchor,
+      approach: anchor,
+      occluderId: null
+    }
+    seat.face = face || seat.face || 'down'
+    this._seatEntity(e, seat, {
+      source: options.source || 'scripted',
+      immediate: options.immediate === true
+    })
     if (e.autonomy) { e.autonomy.externalCommand = false; e.autonomy.nextThinkAt = this.t + 700 }
+    return true
   }
   face(id, dir) { const e = id === 'player' ? this.player : this.agents.get(id); if (e) e.dir = dir }
   playerAutoWalk(tile, cb) {
     const p = this.player
+    this._standEntity(p, 'auto-walk')
     const from = [Math.floor(p.x / T), Math.floor(p.y / T)]
     p.path = astar(this.grid(), from, tile) || []
     p.cb = cb || null
@@ -570,6 +911,7 @@ export class Engine {
       this.moveMarker = { x: world.x, y: world.y, valid: false, started: this.t, until: this.t + 650 }
       return false
     }
+    this._standEntity(this.player, 'pointer-walk')
     this.player.path = path
     this.player.cb = null
     const goal = path[path.length - 1] || from
@@ -594,6 +936,7 @@ export class Engine {
     const held = this.worldObject(this.heldObjectId)
     return {
       mounted: mounted ? { id: mounted.id, kind: mounted.kind, label: mounted.label, speed: mounted.speed } : null,
+      seating: this.getChairSeatingState(),
       held: held ? {
         id: held.id,
         kind: held.kind,
@@ -650,6 +993,7 @@ export class Engine {
     const o = this.worldObject(id)
     if (!o || !o.mountable || o.map !== this.map || o.mounted || o.held || this.heldObjectId || this.freezePlayer) return false
     if (Math.hypot(o.x - this.player.x, o.y - this.player.y) > T * 1.8) return false
+    this._standEntity(this.player, 'mount', { immediate: true })
     if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
     // Enter the parked vehicle in its visible orientation, then let movement
     // steer it. Snapping every mount to the avatar's approach direction made
@@ -722,6 +1066,7 @@ export class Engine {
     const o = this.worldObject(id)
     if (!o || !o.throwable || o.map !== this.map || o.held || o.mounted || this.heldObjectId || this.freezePlayer) return false
     if (Math.hypot(o.x - this.player.x, o.y - this.player.y) > T * 1.65) return false
+    this._standEntity(this.player, 'pickup', { immediate: true })
     if (this.mountedVehicleId) this.dismountVehicle({ silent: true })
     o.held = true
     o.vx = 0; o.vy = 0; o.vz = 0; o.z = 42; o.bounces = 0
@@ -1133,7 +1478,7 @@ export class Engine {
     const a = e.autonomy
     const plan = buildBoundedPlan(goal, a.limits)
     beginGoal(a, goal, plan, this.t)
-    if (goal.kind === NPC_GOALS.SOCIALIZE) e.sitting = false
+    if (goal.kind === NPC_GOALS.SOCIALIZE) this._standEntity(e, 'socialize')
     e.meta.autonomy = autonomySnapshot(a)
     if (goal.assignmentId && e.meta.autonomyAssignment) {
       e.meta.autonomyAssignment.status = goal.targetTile ? 'planning-route' : 'starting'
@@ -1157,7 +1502,7 @@ export class Engine {
     if (!raw?.length) return 'failed'
     const route = smoothTilePath(navigationGrid, from, raw, 6)
     if (!route.length) return 'failed'
-    e.sitting = false
+    this._standEntity(e, 'autonomy-route')
     e.path = route
     e.cb = null
     e.meta.autonomyPath = true
@@ -1217,6 +1562,8 @@ export class Engine {
       target.meta.socialLock = { by: e.id, with: e.id, until }
       e.meta.activity = 'socialize'
       target.meta.activity = 'socialize'
+      this._standEntity(e, 'socialize')
+      this._standEntity(target, 'socialize')
       if (target !== this.player && target.meta.autonomyPath) { target.path = []; delete target.meta.autonomyPath }
       this._faceEachOther(e, target)
       this.avatarEmotions.cue(e, 'social-start', { now: this.t, source: 'social-start' })
@@ -1323,8 +1670,8 @@ export class Engine {
     }
 
     if (step.kind === 'sit') {
-      e.sitting = true
-      e.dir = step.face || a.currentGoal.face || 'up'
+      const tile = step.targetTile || a.currentGoal.targetTile || e.home?.desk || [Math.floor(e.x / T), Math.floor(e.y / T)]
+      this.sit(e.id, tile, step.face || a.currentGoal.face || 'up', { source: 'autonomy' })
       if (advanceAction(a, this.t, { type: 'sat-down' })) this._finishAutonomyGoal(e, 'success', 'plan-complete')
       return
     }
@@ -1555,6 +1902,7 @@ export class Engine {
     const p = this.player
     const keyX = (this.keys.has('ArrowRight') || this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('ArrowLeft') || this.keys.has('KeyA') ? 1 : 0)
     const keyY = (this.keys.has('ArrowDown') || this.keys.has('KeyS') ? 1 : 0) - (this.keys.has('ArrowUp') || this.keys.has('KeyW') ? 1 : 0)
+    if ((keyX || keyY || p.path?.length) && this._hasSeatState(p)) this._standEntity(p, 'movement-input')
     if (p.path && p.path.length && (this.freezePlayer || (!keyX && !keyY))) {
       const beforeX = p.x, beforeY = p.y
       const [tx, ty] = p.path[0]
@@ -1640,7 +1988,10 @@ export class Engine {
     // --- agents follow paths / bounded autonomous loop ---
     for (const e of this.agents.values()) {
       if (e.map && e.map !== this.map) { if (e.bubble && performance.now() > e.bubble.until) e.bubble = null; continue }
-      if (e.path.length) this._moveAgentAlongPath(e, f)
+      if (e.path.length) {
+        if (this._hasSeatState(e)) this._standEntity(e, 'path-movement')
+        this._moveAgentAlongPath(e, f)
+      }
       // Compatibility fallback for explicitly non-autonomous scripted actors.
       // Team members and visitors never enter this legacy branch.
       else if (!e.autonomy?.enabled && !this.meetingMode && !this.simMode && this.map === 'office' && e.home && !e.meta.chatting) {
@@ -1667,6 +2018,8 @@ export class Engine {
       this._updateNpcAutonomy(e, dt)
       if (e.bubble && performance.now() > e.bubble.until) e.bubble = null
     }
+    this._advanceNonProximitySeatMotion(dt)
+    this._updateAutomaticChairSeating(dt)
     if (p.bubble && performance.now() > p.bubble.until) p.bubble = null
 
     this.avatarEmotions.observe(p, {
@@ -1953,13 +2306,17 @@ export class Engine {
         .map(o => ({ type: 'occluder', y: o.baseline, value: o }))
     ].sort((a, b) => a.y - b.y || ({ entity: 0, object: 1, occluder: 2 }[a.type] - ({ entity: 0, object: 1, occluder: 2 }[b.type])))
     for (const item of scene) {
-      if (item.type === 'entity') this._drawEnt(item.value)
+      if (item.type === 'entity') {
+        this._drawEnt(item.value)
+        this._drawSeatFront(item.value, bg)
+      }
       else if (item.type === 'object') this._drawWorldObject(item.value)
       else this._drawFurnitureOccluder(item.value, bg)
     }
     if (this.map === 'office') this._drawShelfSign()
     for (const e of ents) this._drawEntOverlay(e)
     for (const e of ents) if (e.bubble) this._drawBubble(e)
+    for (const e of ents) this._drawEntRoleLabel(e)
     this._drawInteractionKey()
     ctx.restore()
   }
@@ -1976,6 +2333,19 @@ export class Engine {
     // baseline. Drawing them before the crop erased them; drawing them after
     // the whole scene put them on top of avatars standing in front.
     if (occluder.id === 'game-shelf-front') this._drawShelfCartridges()
+  }
+
+  _drawSeatFront(e, background) {
+    if (!background || !e?.sitting || !e.meta?.seat?.occluderId || this.map !== 'office') return
+    const occluder = layoutOccluders(this.maps.office).find(item => item.id === e.meta.seat.occluderId)
+    if (!occluder) return
+    const [x, y, width, height] = occluder.source
+    const frontY = Math.max(y, Math.min(y + height, occluder.baseline))
+    const frontHeight = y + height - frontY
+    if (frontHeight <= 0) return
+    // Only the measured lower lip is repainted after a seated actor. Reusing
+    // the full opaque crop here would erase their torso and face.
+    this.ctx.drawImage(background, x, frontY, width, frontHeight, x, frontY, width, frontHeight)
   }
 
   _drawAmbientBack() {
@@ -2505,19 +2875,22 @@ export class Engine {
     const ridePose = rideTransitionPose(rideMotion, this.t, this.reduceMotion)
     const rideKind = mounted?.kind || rideMotion?.kind || null
     const dismounting = !mounted && rideMotion?.phase === 'dismount' && ridePose.active && !!rideKind
+    const seatPose = seatPoseLayout(e.seatMotion, { facing: e.dir })
+    const visuallySeated = !!e.sitting || seatPose.isSeated
     const walkFrame = e.walkAnimation?.frame || 'idle'
     const walkAdvanced = !!e.walkAnimation?.advanced
     // Only canonical 3x4 sheets are safe to slice. A malformed/partial sheet
     // falls back to the audited directional still instead of leaking an
     // adjacent action into the walking avatar.
-    const useWalkSheet = !!(isWalkSheetCompatible(walkSheet) && walkAdvanced && !e.sitting && !mounted && !this.reduceMotion)
+    const useWalkSheet = !!(isWalkSheetCompatible(walkSheet) && walkAdvanced && !visuallySeated && !mounted && !this.reduceMotion)
     const useMotionSheet = useWalkSheet
     const source = useMotionSheet ? sheetSource(e.dir, walkFrame) : null
     const sourceW = source?.width || img?.width
     const sourceH = source?.height || img?.height
-    const visual = e.sitting ? AVATAR_VISUAL.seated : (isPlayer ? AVATAR_VISUAL.player : AVATAR_VISUAL.npc)
-    const targetH = visual.height
-    const targetW = visual.width
+    const standingVisual = isPlayer ? AVATAR_VISUAL.player : AVATAR_VISUAL.npc
+    const seatMix = seatPose.active ? seatPose.mix : (e.sitting ? 1 : 0)
+    const targetH = standingVisual.height + (AVATAR_VISUAL.seated.height - standingVisual.height) * seatMix
+    const targetW = standingVisual.width + (AVATAR_VISUAL.seated.width - standingVisual.width) * seatMix
     const frameLayout = avatarDrawLayout({
       sourceWidth: sourceW,
       sourceHeight: sourceH,
@@ -2550,12 +2923,12 @@ export class Engine {
       : this.npcReactions.visualOffset(e, this.t, this.reduceMotion)
     const walkMotion = e.walkMotion?.pose || NEUTRAL_AVATAR_WALK_POSE
     const standingMotion = {
-      x: (reactionMotion.x || 0) + (walkMotion.x || 0) + (ridePose.offsetX || 0),
-      y: (reactionMotion.y || 0) + (walkMotion.y || 0) + (ridePose.hop || 0),
-      rotation: (reactionMotion.rotation || 0) + (walkMotion.rotation || 0) + (ridePose.rotation || 0),
-      shearX: walkMotion.shearX || 0,
-      scaleX: (reactionMotion.scaleX ?? 1) * (walkMotion.scaleX ?? 1) * ridePose.scaleX,
-      scaleY: (reactionMotion.scaleY ?? 1) * (walkMotion.scaleY ?? 1) * ridePose.scaleY
+      x: (reactionMotion.x || 0) + (walkMotion.x || 0) + (ridePose.offsetX || 0) + seatPose.offsetX,
+      y: (reactionMotion.y || 0) + (walkMotion.y || 0) + (ridePose.hop || 0) + seatPose.offsetY,
+      rotation: (reactionMotion.rotation || 0) + (walkMotion.rotation || 0) + (ridePose.rotation || 0) + seatPose.rotation,
+      shearX: (walkMotion.shearX || 0) + seatPose.shearX,
+      scaleX: (reactionMotion.scaleX ?? 1) * (walkMotion.scaleX ?? 1) * ridePose.scaleX * seatPose.scaleX,
+      scaleY: (reactionMotion.scaleY ?? 1) * (walkMotion.scaleY ?? 1) * ridePose.scaleY * seatPose.scaleY
     }
 
     if (isTarget) {
@@ -2565,23 +2938,26 @@ export class Engine {
     }
     // Mounted vehicles own the ground shadow; drawing the standing avatar
     // shadow as well made the wheels look embedded in a dark puddle.
-    if (!mounted) {
+    if (!mounted && !seatPose.isSeated) {
       ctx.fillStyle = isPlayer ? 'rgba(20,15,36,.34)' : 'rgba(18,14,26,.27)'
-      ctx.globalAlpha = walkMotion.shadowAlpha ?? 1
+      ctx.globalAlpha = (walkMotion.shadowAlpha ?? 1) * seatPose.shadowAlpha
       ctx.beginPath(); ctx.ellipse(
         e.x, e.y + 2,
-        Math.max(10, drawW * .36 * (walkMotion.shadowScaleX ?? 1)),
-        4.6 * (walkMotion.shadowScaleY ?? 1),
+        Math.max(10, drawW * .36 * (walkMotion.shadowScaleX ?? 1) * seatPose.shadowScaleX),
+        4.6 * (walkMotion.shadowScaleY ?? 1) * seatPose.shadowScaleY,
         0, 0, Math.PI * 2
       ); ctx.fill()
       ctx.globalAlpha = 1
     }
-    if (isPlayer) {
+    if (isPlayer && !seatPose.isSeated) {
       ctx.fillStyle = 'rgba(99,82,219,.12)'
       ctx.strokeStyle = 'rgba(255,255,255,.96)'; ctx.lineWidth = 3
       ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 19 + pulse * .35, 7.5 + pulse * .12, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
       ctx.strokeStyle = 'rgba(124,105,242,.95)'; ctx.lineWidth = 2
       ctx.beginPath(); ctx.ellipse(e.x, e.y + 1, 14.5, 5.3, 0, 0, Math.PI * 2); ctx.stroke()
+    } else if (isPlayer && seatPose.isSeated) {
+      ctx.strokeStyle = 'rgba(255,255,255,.72)'; ctx.lineWidth = 2
+      ctx.beginPath(); ctx.ellipse(e.x, e.y + 5, 16, 5, 0, 0, Math.PI * 2); ctx.stroke()
     }
     let mountedAvatar = null
     if (mounted) {
@@ -2634,7 +3010,7 @@ export class Engine {
     if (held) this._drawWorldObject(held)
     e._renderOverlay = {
       drawW: mountedAvatar?.drawW || drawW,
-      drawH: mountedAvatar?.drawH || frameLayout.anchorY + ridingLift,
+      drawH: mountedAvatar?.drawH || (frameLayout.anchorY + ridingLift) * seatPose.scaleY,
       bob: mountedCycle?.bob || bob
     }
   }
@@ -2686,6 +3062,15 @@ export class Engine {
       ctx.fillStyle = '#ffffff'
       ctx.textAlign = 'center'; ctx.fillText(name, e.x + 4, e.y + 25); ctx.textAlign = 'left'
     }
+  }
+
+  _drawEntRoleLabel(e) {
+    const isPlayer = e === this.player
+    const metrics = e._renderOverlay || {
+      drawH: e.sitting ? AVATAR_VISUAL.seated.height : (isPlayer ? AVATAR_VISUAL.player.height : AVATAR_VISUAL.npc.height),
+      bob: 0
+    }
+    return drawAgentRoleLabel(this.ctx, e, { drawHeight: metrics.drawH, bob: metrics.bob })
   }
 
   _drawEmote(e, drawW, drawH, bob) {

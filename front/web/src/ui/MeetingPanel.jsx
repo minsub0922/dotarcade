@@ -1,16 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../state/store.js'
-import { TEAM, PLAYER } from '../data/personas.js'
 import { isMeetingActive, isMeetingPaused, isMeetingTransitioning, meetingStatusCopy } from '../meeting/status.js'
 import Markdown from './Markdown.jsx'
 import PhaseStepper from './PhaseStepper.jsx'
 import ReferenceDiscovery from './ReferenceDiscovery.jsx'
+import { getMeetingSpeaker, meetingEntryKindLabel } from './meetingSpeaker.js'
 
-const face = id => id === 'player'
-  ? '/assets/sprites_v2/player/face.png'
-  : `/assets/sprites_v2/${TEAM.find(t => t.id === id)?.sprite || 'pm'}/face.png`
-const nameOf = id => id === 'player' ? `${PLAYER.name} (팀장)` : id === 'system' ? '' : (TEAM.find(t => t.id === id)?.name || id)
-const colorOf = id => id === 'player' ? '#ffd24a' : TEAM.find(t => t.id === id)?.color || '#8a93c6'
 const checkpointTime = value => {
   if (!value) return ''
   const time = new Date(value)
@@ -293,12 +288,18 @@ export default function MeetingPanel({ meet, onDeploy, onPlay }) {
             if (e.kind === 'system') return <div key={i} className="sys-line">{e.text}</div>
             if (e.kind === 'source') return <div key={i} className="src-line">{e.text}</div>
             const isDoc = e.kind === 'doc' || e.kind === 'note'
+            const speaker = getMeetingSpeaker(e.agentId)
+            const kindLabel = meetingEntryKindLabel(e.kind)
             return (
               <div key={i} className={`m-entry ${e.kind}`}>
-                {e.agentId !== 'system' && <img src={face(e.agentId)} className="face sm" alt="" />}
+                {speaker && <img src={speaker.faceSrc} className="face sm" alt="" />}
                 <div className="m-body">
-                  <div className="m-name" style={{ color: colorOf(e.agentId) }}>
-                    {nameOf(e.agentId)} {e.kind === 'qa' && '· QA'} {e.kind === 'note' && '· 조사 메모'}
+                  <div className="m-name" style={{ '--speaker-color': speaker?.color || '#8a93c6' }}>
+                    <span className="m-speaker-name">{speaker?.name || e.agentId}</span>
+                    {speaker?.role && (
+                      <span className="m-role-badge"><span className="sr-only">역할: </span>{speaker.role}</span>
+                    )}
+                    {kindLabel && <span className="m-entry-kind"><span aria-hidden="true">· </span>{kindLabel}</span>}
                   </div>
                   <div className={`m-text ${isDoc ? 'doc' : ''}`}><Markdown text={e.text} /></div>
                 </div>
